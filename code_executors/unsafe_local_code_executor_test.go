@@ -17,14 +17,12 @@ package code_executors
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestUnsafeLocalCodeExecutor(t *testing.T) {
-	// Setup paths
 	cwd, _ := os.Getwd()
 	scriptsDir := filepath.Join(cwd, "test_scripts")
 	input := CodeExecutionInput{
@@ -32,17 +30,14 @@ func TestUnsafeLocalCodeExecutor(t *testing.T) {
 		Args:       []string{"2", "3", "4"},
 	}
 	executor := NewUnsafeLocalCodeExecutor(300 * time.Second)
-	// Invoke
 	result, err := executor.ExecuteCode(nil, input)
 	if err != nil {
-		t.Errorf("UnsafeLocalCodeExecutor should not return an error: %s", err.Error())
-		return
+		t.Fatalf("ExecuteCode: %v", err)
 	}
 	t.Logf("UnsafeLocalCodeExecutor result: %s", result.StdOut)
 }
 
 func TestSkillScriptExecutor_ExecuteCode(t *testing.T) {
-	// Setup paths
 	cwd, _ := os.Getwd()
 	scriptsDir := filepath.Join(cwd, "test_scripts")
 
@@ -114,20 +109,23 @@ func TestSkillScriptExecutor_ExecuteCode(t *testing.T) {
 				Args:       tt.args,
 			}
 
-			// Invoke
 			result, err := executor.ExecuteCode(nil, input)
 
 			if tt.expectError {
-				assert.Error(t, err)
+				if err == nil {
+					t.Error("expected error")
+				}
 			} else {
-				assert.NoError(t, err)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
 			}
 
-			if tt.expectedStdout != "" {
-				assert.Contains(t, result.StdOut, tt.expectedStdout)
+			if tt.expectedStdout != "" && !strings.Contains(result.StdOut, tt.expectedStdout) {
+				t.Errorf("stdout: got %q want substring %q", result.StdOut, tt.expectedStdout)
 			}
-			if tt.expectedStderr != "" {
-				assert.Contains(t, result.StdErr, tt.expectedStderr)
+			if tt.expectedStderr != "" && !strings.Contains(result.StdErr, tt.expectedStderr) {
+				t.Errorf("stderr: got %q want substring %q", result.StdErr, tt.expectedStderr)
 			}
 		})
 	}

@@ -15,12 +15,10 @@
 package skilltool
 
 import (
-	"encoding/json"
 	"log"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
 
 	"google.golang.org/adk/code_executors"
 	"google.golang.org/adk/skills"
@@ -101,88 +99,139 @@ func createMockSkill(t *testing.T) []*skills.Skill {
 func TestListSkillsTool(t *testing.T) {
 	skillList := createMockSkill(t)
 	toolset, err := NewSkillToolset(skillList, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewSkillToolset: %v", err)
+	}
 
 	listTool := toolset.listSkillsTool()
-	assert.Equal(t, "list_skills", listTool.Name())
+	if listTool.Name() != "list_skills" {
+		t.Errorf("list tool name: got %q want list_skills", listTool.Name())
+	}
 
 	result, err := toolset.listSkillsToolHandler(nil, listSkillsArgs{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("listSkillsToolHandler: %v", err)
+	}
 
 	outputMap := result
 	xmlResult, ok := outputMap["result"].(string)
-	assert.True(t, ok)
-	assert.Contains(t, xmlResult, "multiplication-calculator")
-	assert.Contains(t, xmlResult, "提供乘法数值计算功能。当需要执行乘法运算任务时使用此技能。")
+	if !ok {
+		t.Fatal("result is not a string")
+	}
+	if !strings.Contains(xmlResult, "multiplication-calculator") {
+		t.Errorf("xml should contain multiplication-calculator: %q", xmlResult)
+	}
+	if !strings.Contains(xmlResult, "提供乘法数值计算功能。当需要执行乘法运算任务时使用此技能。") {
+		t.Error("xml should contain skill description")
+	}
 }
 
 func TestLoadSkillTool(t *testing.T) {
 	skillList := createMockSkill(t)
 	toolset, err := NewSkillToolset(skillList, nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewSkillToolset: %v", err)
+	}
 
 	loadTool := toolset.loadSkillTool()
-	assert.Equal(t, "load_skill", loadTool.Name())
+	if loadTool.Name() != "load_skill" {
+		t.Errorf("load tool name: got %q want load_skill", loadTool.Name())
+	}
 
-	// Test missing name
 	result, err := toolset.loadSkillToolHandler(nil, loadSkillArgs{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillToolHandler missing name: %v", err)
+	}
 	outputMap := result
-	assert.Equal(t, "MISSING_SKILL_NAME", outputMap["error_code"])
+	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("missing name error_code: got %v", outputMap["error_code"])
+	}
 
-	// Test skill not found
 	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Name: "unknown-skill"})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillToolHandler unknown: %v", err)
+	}
 	outputMap = result
-	assert.Equal(t, "SKILL_NOT_FOUND", outputMap["error_code"])
+	if outputMap["error_code"] != "SKILL_NOT_FOUND" {
+		t.Errorf("unknown skill error_code: got %v", outputMap["error_code"])
+	}
 
-	// Test success
 	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculator"})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillToolHandler success: %v", err)
+	}
 	outputMap = result
-	assert.Equal(t, "multiplication-calculator", outputMap["skill_name"])
-	assert.Equal(t, mockSkills["multiplication-calculator"].Instructions, outputMap["instructions"])
-	assert.NotEmpty(t, outputMap["frontmatter"])
+	if outputMap["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill_name: got %v", outputMap["skill_name"])
+	}
+	if outputMap["instructions"] != mockSkills["multiplication-calculator"].Instructions {
+		t.Error("instructions mismatch")
+	}
+	if outputMap["frontmatter"] == "" {
+		t.Error("frontmatter should be non-empty")
+	}
 }
 
 func TestLoadSkillResourceTool(t *testing.T) {
 	skillList := createMockSkill(t)
 	toolset, err := NewSkillToolset(skillList, nil)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewSkillToolset: %v", err)
+	}
 
 	resourceTool := toolset.loadSkillResourceTool()
-	assert.Equal(t, "load_skill_resource", resourceTool.Name())
+	if resourceTool.Name() != "load_skill_resource" {
+		t.Errorf("resource tool name: got %q", resourceTool.Name())
+	}
 
-	// Test missing params
 	result, err := toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillResourceToolHandler: %v", err)
+	}
 	outputMap := result
-	assert.Equal(t, "MISSING_SKILL_NAME", outputMap["error_code"])
+	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("error_code: got %v", outputMap["error_code"])
+	}
 
 	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{SkillName: "multiplication-calculator"})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillResourceToolHandler: %v", err)
+	}
 	outputMap = result
-	assert.Equal(t, "MISSING_RESOURCE_PATH", outputMap["error_code"])
+	if outputMap["error_code"] != "MISSING_RESOURCE_PATH" {
+		t.Errorf("error_code: got %v", outputMap["error_code"])
+	}
 
-	// Test success
 	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
 		Path:      "scripts/multiply.py",
 	})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillResourceToolHandler success: %v", err)
+	}
 	outputMap = result
-	assert.Equal(t, "multiplication-calculator", outputMap["skill_name"])
-	assert.Equal(t, "scripts/multiply.py", outputMap["path"])
-	assert.Equal(t, mockSkills["multiplication-calculator"].Resources.Scripts["multiply.py"].String(), outputMap["content"])
+	if outputMap["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill_name: got %v", outputMap["skill_name"])
+	}
+	if outputMap["path"] != "scripts/multiply.py" {
+		t.Errorf("path: got %v", outputMap["path"])
+	}
+	wantContent := mockSkills["multiplication-calculator"].Resources.Scripts["multiply.py"].String()
+	if outputMap["content"] != wantContent {
+		t.Error("content mismatch")
+	}
 
-	// Test not found
 	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
 		Path:      "scripts/unknown.py",
 	})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("loadSkillResourceToolHandler not found: %v", err)
+	}
 	outputMap = result
-	assert.Equal(t, "RESOURCE_NOT_FOUND", outputMap["error_code"])
+	if outputMap["error_code"] != "RESOURCE_NOT_FOUND" {
+		t.Errorf("error_code: got %v", outputMap["error_code"])
+	}
 }
 
 type mockToolContext struct {
@@ -199,27 +248,37 @@ func TestRunSkillScriptTool(t *testing.T) {
 	mockExecutor := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
 
 	toolset, err := NewSkillToolset(skillList, mockExecutor)
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("NewSkillToolset: %v", err)
+	}
 
 	runTool := toolset.runSkillScriptTool()
-	assert.Equal(t, "run_skill_script", runTool.Name())
+	if runTool.Name() != "run_skill_script" {
+		t.Errorf("run tool name: got %q", runTool.Name())
+	}
 
-	// Test missing params
 	result, err := toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("runSkillScriptToolHandler missing: %v", err)
+	}
 	outputMap := result
-	assert.Equal(t, "MISSING_SKILL_NAME", outputMap["error_code"])
+	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("error_code: got %v", outputMap["error_code"])
+	}
 
-	// Test success
 	result, err = toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
 		ScriptPath: "scripts/multiply.py",
 		Args:       []string{"2", "3", "4"},
 	})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("runSkillScriptToolHandler success: %v", err)
+	}
 	outputMap = result
-	str, _ := json.Marshal(outputMap)
-	println(string(str))
-	assert.Equal(t, "success", outputMap["status"])
-	assert.Equal(t, "24.0\n", outputMap["stdout"])
+	if outputMap["status"] != "success" {
+		t.Errorf("status: got %v want success", outputMap["status"])
+	}
+	if outputMap["stdout"] != "24.0\n" {
+		t.Errorf("stdout: got %q want %q", outputMap["stdout"], "24.0\n")
+	}
 }

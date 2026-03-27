@@ -17,10 +17,8 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 var mockSkill = &Skill{
@@ -49,86 +47,115 @@ var mockSkill = &Skill{
 }
 
 func TestLoadSkillFromDir(t *testing.T) {
-	// 1. Create a temporary directory
 	tmpDir := t.TempDir()
 
-	// 2. Write the mock skill to the temporary directory
 	err := mockSkill.WriteSkill(tmpDir)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("WriteSkill: %v", err)
+	}
 
-	// The skill is written to tmpDir/test-skill
 	skillDir := filepath.Join(tmpDir, mockSkill.Name())
 
-	// 3. Test LoadSkillFromDir
 	loadedSkill, err := LoadSkillFromDir(skillDir)
-	require.NoError(t, err)
-	require.NotNil(t, loadedSkill)
+	if err != nil {
+		t.Fatalf("LoadSkillFromDir: %v", err)
+	}
+	if loadedSkill == nil {
+		t.Fatal("loadedSkill is nil")
+	}
 
-	// Verify Frontmatter
-	assert.Equal(t, mockSkill.Frontmatter.Name, loadedSkill.Frontmatter.Name)
-	assert.Equal(t, mockSkill.Frontmatter.Description, loadedSkill.Frontmatter.Description)
+	if loadedSkill.Frontmatter.Name != mockSkill.Frontmatter.Name {
+		t.Errorf("Name: got %q want %q", loadedSkill.Frontmatter.Name, mockSkill.Frontmatter.Name)
+	}
+	if loadedSkill.Frontmatter.Description != mockSkill.Frontmatter.Description {
+		t.Errorf("Description: got %q want %q", loadedSkill.Frontmatter.Description, mockSkill.Frontmatter.Description)
+	}
 
-	// Verify Instructions
-	// Note: parseSkillMD separates frontmatter and content.
-	// The original Instructions string includes frontmatter, but loadedSkill.Instructions should only have the content.
 	expectedInstructions := "\n# Test Skill\n\nThis is a test skill."
-	assert.Equal(t, expectedInstructions, loadedSkill.Instructions)
+	if loadedSkill.Instructions != expectedInstructions {
+		t.Errorf("Instructions: got %q want %q", loadedSkill.Instructions, expectedInstructions)
+	}
 
-	// Verify Resources
-	require.NotNil(t, loadedSkill.Resources)
+	if loadedSkill.Resources == nil {
+		t.Fatal("Resources is nil")
+	}
 
-	// Verify Scripts
 	script, ok := loadedSkill.Resources.GetScript("test_script.py")
-	assert.True(t, ok)
-	assert.Equal(t, mockSkill.Resources.Scripts["test_script.py"].Src, script.Src)
+	if !ok {
+		t.Fatal("GetScript test_script.py: not found")
+	}
+	if script.Src != mockSkill.Resources.Scripts["test_script.py"].Src {
+		t.Errorf("script Src: got %q want %q", script.Src, mockSkill.Resources.Scripts["test_script.py"].Src)
+	}
 
-	// Verify References
 	ref, ok := loadedSkill.Resources.GetReference("ref.md")
-	assert.True(t, ok)
-	assert.Equal(t, mockSkill.Resources.References["ref.md"], ref)
+	if !ok {
+		t.Fatal("GetReference ref.md: not found")
+	}
+	if ref != mockSkill.Resources.References["ref.md"] {
+		t.Errorf("ref: got %q want %q", ref, mockSkill.Resources.References["ref.md"])
+	}
 
-	// Verify Assets
 	asset, ok := loadedSkill.Resources.GetAsset("data.json")
-	assert.True(t, ok)
-	assert.Equal(t, mockSkill.Resources.Assets["data.json"], asset)
+	if !ok {
+		t.Fatal("GetAsset data.json: not found")
+	}
+	if asset != mockSkill.Resources.Assets["data.json"] {
+		t.Errorf("asset: got %q want %q", asset, mockSkill.Resources.Assets["data.json"])
+	}
 
-	// Verify Assets in subdir (loadDir is recursive)
 	assetSub, ok := loadedSkill.Resources.GetAsset("subdir/file.txt")
-	assert.True(t, ok)
-	assert.Equal(t, mockSkill.Resources.Assets["subdir/file.txt"], assetSub)
+	if !ok {
+		t.Fatal("GetAsset subdir/file.txt: not found")
+	}
+	if assetSub != mockSkill.Resources.Assets["subdir/file.txt"] {
+		t.Errorf("subdir asset: got %q want %q", assetSub, mockSkill.Resources.Assets["subdir/file.txt"])
+	}
 }
 
 func TestReadSkillProperties(t *testing.T) {
 	tmpDir := t.TempDir()
 	err := mockSkill.WriteSkill(tmpDir)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("WriteSkill: %v", err)
+	}
 
 	skillDir := filepath.Join(tmpDir, mockSkill.Name())
 
 	frontmatter, err := ReadSkillProperties(skillDir)
-	require.NoError(t, err)
-	require.NotNil(t, frontmatter)
+	if err != nil {
+		t.Fatalf("ReadSkillProperties: %v", err)
+	}
+	if frontmatter == nil {
+		t.Fatal("frontmatter is nil")
+	}
 
-	assert.Equal(t, mockSkill.Frontmatter.Name, frontmatter.Name)
-	assert.Equal(t, mockSkill.Frontmatter.Description, frontmatter.Description)
+	if frontmatter.Name != mockSkill.Frontmatter.Name {
+		t.Errorf("Name: got %q want %q", frontmatter.Name, mockSkill.Frontmatter.Name)
+	}
+	if frontmatter.Description != mockSkill.Frontmatter.Description {
+		t.Errorf("Description: got %q want %q", frontmatter.Description, mockSkill.Frontmatter.Description)
+	}
 }
 
 func TestLoadSkillFromDir_Errors(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Test non-existent directory
 	_, err := LoadSkillFromDir(filepath.Join(tmpDir, "non-existent"))
-	assert.Error(t, err)
+	if err == nil {
+		t.Error("LoadSkillFromDir non-existent: expected error")
+	}
 
-	// Test empty directory (no SKILL.md)
 	emptyDir := filepath.Join(tmpDir, "empty-skill")
-	_ = mockSkill.WriteSkill(tmpDir) // write normal skill first
-	// overwrite with empty dir
-	// actually let's just make a new dir
-	err = os.Mkdir(emptyDir, 0o755)
-	require.NoError(t, err)
+	if err := os.Mkdir(emptyDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
 
 	_, err = LoadSkillFromDir(emptyDir)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "SKILL.md not found")
+	if err == nil {
+		t.Error("LoadSkillFromDir empty dir: expected error")
+	}
+	if !strings.Contains(err.Error(), "SKILL.md not found") {
+		t.Errorf("error %q should mention SKILL.md not found", err.Error())
+	}
 }
