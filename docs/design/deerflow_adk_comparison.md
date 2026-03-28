@@ -2,6 +2,8 @@
 
 This note compares [DeerFlow](https://github.com/bytedance/deer-flow) (ByteDance’s LangGraph/LangChain “super agent” harness) with **ADK Go** (`google.golang.org/adk`), focused on **robustness when the language model is unreliable**.
 
+**Related:** [deerflow_internals_notes.md](./deerflow_internals_notes.md) (middleware, loop detection, memory filtering—source-level). **E2E:** `go test ./examples/reliable_pipeline/...` exercises `runner.Run` + sequential agents + fallback path.
+
 ## What DeerFlow optimizes for
 
 - **Explicit orchestration**: A LangGraph-style graph encodes allowed transitions; long-horizon work is decomposed into steps, sub-agents, and tools rather than one free-form chat pass.
@@ -30,4 +32,4 @@ This note compares [DeerFlow](https://github.com/bytedance/deer-flow) (ByteDance
 
 Neither framework “fixes” a bad model magically. Both stay usable when you **move control to code**: fixed workflows, strict validation, deterministic fallbacks, small tool surfaces, and hard caps. DeerFlow ships more batteries (sandbox, skills layout, IM channels); ADK Go stays closer to **compose agents in Go** and use workflow agents plus session state as your harness.
 
-The `examples/reliable_pipeline` example demonstrates a minimal pattern: **normalize → (simulated) model text → validate/repair or fallback**, which you can swap the middle step for `llmagent` while keeping the outer graph in Go.
+The `examples/reliable_pipeline` example demonstrates a minimal pattern: **normalize → (simulated) model text → validate/repair or fallback**, which you can swap the middle step for `llmagent` while keeping the outer graph in Go. Runner-level tests in `pipeline_e2e_test.go` check good path, broken path, and long-input truncation; see the **Honest evaluation** section in [deerflow_internals_notes.md](./deerflow_internals_notes.md) for what that does and does not prove.
