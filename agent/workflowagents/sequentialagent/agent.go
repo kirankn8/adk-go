@@ -32,7 +32,7 @@ import (
 // strict order.
 func New(cfg Config) (agent.Agent, error) {
 	if cfg.AgentConfig.Run != nil {
-		return nil, fmt.Errorf("LoopAgent doesn't allow custom Run implementations")
+		return nil, fmt.Errorf("SequentialAgent doesn't allow custom Run implementations")
 	}
 
 	sequentialAgentImpl := &sequentialAgent{}
