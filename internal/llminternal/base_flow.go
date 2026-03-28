@@ -203,15 +203,19 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 				continue
 			}
 
+			// Yield the tool function-response event before the synthetic model event for
+			// adk_request_confirmation. OpenAI (and other chat APIs) require every assistant
+			// message with tool_calls to be followed immediately by tool role messages for
+			// those calls; inserting another assistant turn in between breaks the transcript.
+			if !yield(ev, nil) {
+				return
+			}
+
 			toolConfirmationEvent := generateRequestConfirmationEvent(ctx, modelResponseEvent, ev)
 			if toolConfirmationEvent != nil {
 				if !yield(toolConfirmationEvent, nil) {
 					return
 				}
-			}
-
-			if !yield(ev, nil) {
-				return
 			}
 
 			// If the model response is structured, yield it as a final model response event.
