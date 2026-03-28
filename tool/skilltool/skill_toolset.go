@@ -41,7 +41,7 @@ const (
 		"- **assets/** (Optional): Templates, scripts or other resources used by the skill.\n" +
 		"- **scripts/** (Optional): Executable scripts that can be run via bash.\n\n" +
 		"This is very important:\n\n" +
-		"1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name=\"<SKILL_NAME>\"` to read its full instructions before proceeding.\n" +
+		"1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name=\"<SKILL_NAME>\"` (or the same value in `skill_name` or `skill`) to read its full instructions before proceeding.\n" +
 		"2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.\n" +
 		"3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.\n" +
 		"4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.\n"
@@ -143,20 +143,33 @@ func (s *SkillToolset) listSkillsTool() tool.Tool {
 }
 
 type loadSkillArgs struct {
-	Name string `json:"name" jsonschema:"The name of the skill to load."`
+	Name      string `json:"name,omitempty" jsonschema:"The skill id to load (preferred)."`
+	Skill     string `json:"skill,omitempty" jsonschema:"Alias for name (same as the skill id)."`
+	SkillName string `json:"skill_name,omitempty" jsonschema:"Alias for name (matches load_skill_resource)."`
+}
+
+func resolveLoadSkillID(a loadSkillArgs) string {
+	if s := strings.TrimSpace(a.Name); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(a.Skill); s != "" {
+		return s
+	}
+	return strings.TrimSpace(a.SkillName)
 }
 
 func (s *SkillToolset) loadSkillToolHandler(ctx tool.Context, args loadSkillArgs) (map[string]any, error) {
-	if strings.TrimSpace(args.Name) == "" {
+	id := resolveLoadSkillID(args)
+	if id == "" {
 		return map[string]any{
-			"error":      "Skill name is required.",
+			"error":      "Skill name is required (use name, skill, or skill_name).",
 			"error_code": "MISSING_SKILL_NAME",
 		}, nil
 	}
-	sk, ok := s.getSkill(args.Name)
+	sk, ok := s.getSkill(id)
 	if !ok {
 		return map[string]any{
-			"error":      fmt.Sprintf("Skill '%s' not found.", args.Name),
+			"error":      fmt.Sprintf("Skill '%s' not found.", id),
 			"error_code": "SKILL_NOT_FOUND",
 		}, nil
 	}
@@ -236,29 +249,44 @@ func (s *SkillToolset) loadSkillResourceTool() tool.Tool {
 }
 
 type runSkillScriptArgs struct {
-	SkillName  string   `json:"skill_name" jsonschema:"The name of the skill."`
-	ScriptPath string   `json:"script_path" jsonschema:"The relative path to the script (e.g., 'scripts/setup.py')."`
-	Args       []string `json:"args_list" jsonschema:"Optional arguments to pass to the script as list."`
+	SkillName string `json:"skill_name" jsonschema:"The name of the skill."`
+	// ScriptPath is canonical (e.g. scripts/discover-environment.sh).
+	ScriptPath string `json:"script_path,omitempty" jsonschema:"Relative path to the script under the skill (e.g. scripts/discover-environment.sh)."`
+	// Script is an alias used by some models instead of script_path.
+	Script string `json:"script,omitempty" jsonschema:"Alias for script_path."`
+	// Args is the canonical list form.
+	Args []string `json:"args_list,omitempty" jsonschema:"Optional argv tokens for the script."`
+	// ArgsLine is an alias: one string split on spaces (common model output).
+	ArgsLine string `json:"args,omitempty" jsonschema:"Alias for args_list: space-separated arguments as a single string."`
 }
 
 func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkillScriptArgs) (map[string]any, error) {
+	scriptPath := strings.TrimSpace(args.ScriptPath)
+	if scriptPath == "" {
+		scriptPath = strings.TrimSpace(args.Script)
+	}
+	execArgs := append([]string(nil), args.Args...)
+	if line := strings.TrimSpace(args.ArgsLine); line != "" {
+		execArgs = append(execArgs, strings.Fields(line)...)
+	}
+
 	if strings.TrimSpace(args.SkillName) == "" {
 		return map[string]any{"error": "Skill name is required.", "error_code": "MISSING_SKILL_NAME"}, nil
 	}
-	if strings.TrimSpace(args.ScriptPath) == "" {
-		return map[string]any{"error": "Script path is required.", "error_code": "MISSING_SCRIPT_PATH"}, nil
+	if scriptPath == "" {
+		return map[string]any{"error": "Script path is required (use script_path or script).", "error_code": "MISSING_SCRIPT_PATH"}, nil
 	}
 	sk, ok := s.getSkill(args.SkillName)
 	if !ok {
 		return map[string]any{"error": fmt.Sprintf("Skill '%s' not found.", args.SkillName), "error_code": "SKILL_NOT_FOUND"}, nil
 	}
-	name := args.ScriptPath
-	if strings.HasPrefix(args.ScriptPath, "scripts/") {
-		name = strings.TrimPrefix(args.ScriptPath, "scripts/")
+	name := scriptPath
+	if strings.HasPrefix(scriptPath, "scripts/") {
+		name = strings.TrimPrefix(scriptPath, "scripts/")
 	}
 
 	if scr, ok := sk.Resources.GetScript(name); !ok || scr == nil {
-		return map[string]any{"error": fmt.Sprintf("Script '%s' not found in skill '%s'.", args.ScriptPath, args.SkillName), "error_code": "SCRIPT_NOT_FOUND"}, nil
+		return map[string]any{"error": fmt.Sprintf("Script '%s' not found in skill '%s'.", scriptPath, args.SkillName), "error_code": "SCRIPT_NOT_FOUND"}, nil
 	}
 	if s.codeExecutor == nil {
 		return map[string]any{
@@ -269,7 +297,7 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 	argsStr, _ := json.Marshal(args)
 	log.Printf("runSkillScriptToolHandler args is %s", string(argsStr))
 	codeExecutorResult, err := s.codeExecutor.ExecuteCode(nil, code_executors.CodeExecutionInput{
-		Args:        args.Args,
+		Args:        execArgs,
 		ScriptPath:  filepath.Join(sk.GetSkillPath(), "scripts", name),
 		InputFiles:  nil,
 		ExecutionID: ctx.InvocationID(),
@@ -278,7 +306,7 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 	log.Printf("codeExecutor result is %s", string(resultStr))
 	if err != nil {
 		return map[string]any{
-			"error":      fmt.Sprintf("Failed to execute script '%s':\n%s", args.ScriptPath, err.Error()),
+			"error":      fmt.Sprintf("Failed to execute script '%s':\n%s", scriptPath, err.Error()),
 			"error_code": "EXECUTION_ERROR",
 		}, nil
 	}
@@ -286,7 +314,7 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 
 	return map[string]any{
 		"skill_name":  sk.Name(),
-		"script_path": args.ScriptPath,
+		"script_path": scriptPath,
 		"stdout":      codeExecutorResult.StdOut,
 		"stderr":      codeExecutorResult.StdErr,
 		"status":      status,
@@ -297,7 +325,7 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 func (s *SkillToolset) runSkillScriptTool() tool.Tool {
 	t, _ := functiontool.New(functiontool.Config{
 		Name:        "run_skill_script",
-		Description: "Executes a script from a skill's scripts/ directory.",
+		Description: "Executes a script from a skill's scripts/ directory. Prefer skill_name + script_path (or alias script) + optional args_list or a single args string.",
 	}, s.runSkillScriptToolHandler)
 	return t
 }

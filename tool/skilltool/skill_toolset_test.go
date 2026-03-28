@@ -170,6 +170,15 @@ func TestLoadSkillTool(t *testing.T) {
 	if outputMap["frontmatter"] == "" {
 		t.Error("frontmatter should be non-empty")
 	}
+
+	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Skill: "multiplication-calculator"})
+	if err != nil {
+		t.Fatalf("loadSkillToolHandler skill alias: %v", err)
+	}
+	outputMap = result
+	if outputMap["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill alias skill_name: got %v", outputMap["skill_name"])
+	}
 }
 
 func TestLoadSkillResourceTool(t *testing.T) {
@@ -280,5 +289,22 @@ func TestRunSkillScriptTool(t *testing.T) {
 	}
 	if outputMap["stdout"] != "24.0\n" {
 		t.Errorf("stdout: got %q want %q", outputMap["stdout"], "24.0\n")
+	}
+
+	// Model-style aliases: script + args string instead of script_path + args_list.
+	result, err = toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+		SkillName: "multiplication-calculator",
+		Script:    "scripts/multiply.py",
+		ArgsLine:  "2 3 4",
+	})
+	if err != nil {
+		t.Fatalf("runSkillScriptToolHandler alias args: %v", err)
+	}
+	outputMap = result
+	if outputMap["status"] != "success" {
+		t.Errorf("alias status: got %v want success", outputMap["status"])
+	}
+	if outputMap["stdout"] != "24.0\n" {
+		t.Errorf("alias stdout: got %q want %q", outputMap["stdout"], "24.0\n")
 	}
 }
