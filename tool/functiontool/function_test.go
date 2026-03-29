@@ -748,6 +748,8 @@ func TestToolConfirmation(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			sessionKey := strings.ReplaceAll(t.Name(), "/", "_")
+
 			mockModel := &testutil.MockModel{
 				Responses: []*genai.Content{
 					genai.NewContentFromFunctionCall("test_tool", tc.args, genai.RoleModel),
@@ -772,7 +774,7 @@ func TestToolConfirmation(t *testing.T) {
 			runner := testutil.NewTestAgentRunner(t, a)
 			eventCount := 0
 
-			ev := runner.Run(t, "id", "message")
+			ev := runner.Run(t, sessionKey, "message")
 
 			var confirmFunctionCall *genai.FunctionCall
 			for got, err := range ev {
@@ -815,7 +817,7 @@ func TestToolConfirmation(t *testing.T) {
 
 			if confirmFunctionCall != nil && tc.confirmFunctionResponse != nil {
 				tc.confirmFunctionResponse.ID = confirmFunctionCall.ID
-				ev := runner.RunContent(t, "id", &genai.Content{
+				ev := runner.RunContent(t, sessionKey, &genai.Content{
 					Parts: []*genai.Part{{FunctionResponse: tc.confirmFunctionResponse}},
 				})
 				for got, err := range ev {

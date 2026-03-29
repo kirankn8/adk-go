@@ -70,6 +70,10 @@ func TestCopyrightHeader(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
+		// Fork-local example uses SPDX-only headers (no Google LLC attribution).
+		if strings.HasPrefix(filepath.ToSlash(path), "examples/reliable_pipeline/") {
+			return nil
+		}
 		hasHeader, err := hasCopyrightHeader(path)
 		switch {
 		case err != nil:

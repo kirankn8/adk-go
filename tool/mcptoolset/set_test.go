@@ -617,6 +617,10 @@ func TestMCPToolSetConfirmation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Isolated session per subtest — reusing "session1" leaks prior cases' events
+			// into history and makes event ordering non-deterministic vs want[].
+			sessionKey := strings.ReplaceAll(t.Name(), "/", "_")
+
 			clientTransport, serverTransport := mcp.NewInMemoryTransports()
 
 			// Run in-memory MCP server.
@@ -649,7 +653,7 @@ func TestMCPToolSetConfirmation(t *testing.T) {
 			prompt := fmt.Sprintf("what is the weather in %s?", tc.city)
 			runner := testutil.NewTestAgentRunner(t, agent)
 
-			ev := runner.Run(t, "session1", prompt)
+			ev := runner.Run(t, sessionKey, prompt)
 
 			comptsList := []cmp.Option{
 				cmpopts.IgnoreFields(session.Event{}, "ID", "Timestamp", "InvocationID"),
@@ -702,7 +706,7 @@ func TestMCPToolSetConfirmation(t *testing.T) {
 
 			if confirmFunctionCall != nil && tc.confirmFunctionResponse != nil {
 				tc.confirmFunctionResponse.ID = confirmFunctionCall.ID
-				ev := runner.RunContent(t, "session1", &genai.Content{
+				ev := runner.RunContent(t, sessionKey, &genai.Content{
 					Parts: []*genai.Part{{FunctionResponse: tc.confirmFunctionResponse}},
 				})
 				for got, err := range ev {
