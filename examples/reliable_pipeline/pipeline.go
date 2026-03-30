@@ -15,9 +15,11 @@ import (
 	"google.golang.org/adk/session"
 )
 
+// Session keys use a single identifier after "temp:" so they work in llmagent
+// Instruction templates, e.g. {temp:reliable_normalized_text}.
 const (
-	stateNormalized = session.KeyPrefixTemp + "reliable:normalized_user_text"
-	stateRawModel   = session.KeyPrefixTemp + "reliable:raw_model_output"
+	stateNormalized = session.KeyPrefixTemp + "reliable_normalized_text"
+	stateRawModel   = session.KeyPrefixTemp + "reliable_raw_model_output"
 )
 
 type intentPayload struct {

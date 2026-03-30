@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/genai"
+
 	"google.golang.org/adk/internal/testutil"
 )
 
@@ -72,5 +74,54 @@ func TestReliablePipelineRunnerE2E_longInputTruncatedStillFallbackSafe(t *testin
 	// normalizeAgent caps at 4000; fallback uses %q so a long run of x must still appear.
 	if !strings.Contains(joined, strings.Repeat("x", 300)) {
 		t.Fatalf("expected truncated normalized input inside fallback echo, got len=%d", len(joined))
+	}
+}
+
+// E2E: normalize → llmagent (mock) → validate; same state keys as production BuildReliablePipelineWithLLM.
+func TestReliablePipelineWithLLM_MockModel_goodJSON(t *testing.T) {
+	mm := &testutil.MockModel{
+		Responses: []*genai.Content{
+			genai.NewContentFromText(`Sure — {"intent":"search","query":"find docs"}`+"\n", genai.RoleModel),
+		},
+	}
+	ag, err := BuildReliablePipelineWithLLM(mm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := testutil.NewTestAgentRunner(t, ag)
+	texts, err := testutil.CollectTextParts(r.Run(t, t.Name(), "  hello  "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, `[ok] Parsed intent="search"`) {
+		t.Fatalf("expected successful parse from llm path, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "find docs") {
+		t.Fatalf("expected query in parse line, got:\n%s", joined)
+	}
+}
+
+func TestReliablePipelineWithLLM_MockModel_badJSONUsesFallback(t *testing.T) {
+	mm := &testutil.MockModel{
+		Responses: []*genai.Content{
+			genai.NewContentFromText("not json at all\n", genai.RoleModel),
+		},
+	}
+	ag, err := BuildReliablePipelineWithLLM(mm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := testutil.NewTestAgentRunner(t, ag)
+	texts, err := testutil.CollectTextParts(r.Run(t, t.Name(), "user ask"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "[fallback]") {
+		t.Fatalf("expected fallback, got:\n%s", joined)
+	}
+	if strings.Contains(joined, `[ok] Parsed intent=`) {
+		t.Fatalf("did not expect successful parse, got:\n%s", joined)
 	}
 }
