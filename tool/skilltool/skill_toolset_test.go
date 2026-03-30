@@ -231,6 +231,21 @@ func TestLoadSkillResourceTool(t *testing.T) {
 	}
 
 	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
+		SkillName:    "multiplication-calculator",
+		ResourcePath: "scripts/multiply.py",
+	})
+	if err != nil {
+		t.Fatalf("loadSkillResourceToolHandler resource_path alias: %v", err)
+	}
+	outputMap = result
+	if outputMap["path"] != "scripts/multiply.py" {
+		t.Errorf("resource_path alias path: got %v", outputMap["path"])
+	}
+	if outputMap["content"] != wantContent {
+		t.Error("resource_path alias content mismatch")
+	}
+
+	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
 		Path:      "scripts/unknown.py",
 	})

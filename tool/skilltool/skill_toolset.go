@@ -43,7 +43,7 @@ const (
 		"This is very important:\n\n" +
 		"1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `name=\"<SKILL_NAME>\"` (or the same value in `skill_name` or `skill`) to read its full instructions before proceeding.\n" +
 		"2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.\n" +
-		"3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.\n" +
+		"3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Pass the relative path as `path` (or the same value in `resource_path`). Do NOT use other tools to access these files.\n" +
 		"4. Use `run_skill_script` to run scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed.\n"
 )
 
@@ -193,14 +193,20 @@ func (s *SkillToolset) loadSkillTool() tool.Tool {
 type loadSkillResourceArgs struct {
 	SkillName string `json:"skill_name" jsonschema:"The name of the skill."`
 	Path      string `json:"path" jsonschema:"The relative path to the resource (e.g., 'references/x.md', 'assets/template.txt', 'scripts/setup.sh')."`
+	// ResourcePath is an alias used by some models instead of path.
+	ResourcePath string `json:"resource_path,omitempty" jsonschema:"Alias for path."`
 }
 
 func (s *SkillToolset) loadSkillResourceToolHandler(ctx tool.Context, args loadSkillResourceArgs) (map[string]any, error) {
 	if strings.TrimSpace(args.SkillName) == "" {
 		return map[string]any{"error": "Skill name is required.", "error_code": "MISSING_SKILL_NAME"}, nil
 	}
-	if strings.TrimSpace(args.Path) == "" {
-		return map[string]any{"error": "Resource path is required.", "error_code": "MISSING_RESOURCE_PATH"}, nil
+	resPath := strings.TrimSpace(args.Path)
+	if resPath == "" {
+		resPath = strings.TrimSpace(args.ResourcePath)
+	}
+	if resPath == "" {
+		return map[string]any{"error": "Resource path is required (use path or resource_path).", "error_code": "MISSING_RESOURCE_PATH"}, nil
 	}
 	sk, ok := s.getSkill(args.SkillName)
 	if !ok {
@@ -208,14 +214,14 @@ func (s *SkillToolset) loadSkillResourceToolHandler(ctx tool.Context, args loadS
 	}
 	var content string
 	var found bool
-	if strings.HasPrefix(args.Path, "references/") {
-		name := strings.TrimPrefix(args.Path, "references/")
+	if strings.HasPrefix(resPath, "references/") {
+		name := strings.TrimPrefix(resPath, "references/")
 		content, found = sk.Resources.GetReference(name)
-	} else if strings.HasPrefix(args.Path, "assets/") {
-		name := strings.TrimPrefix(args.Path, "assets/")
+	} else if strings.HasPrefix(resPath, "assets/") {
+		name := strings.TrimPrefix(resPath, "assets/")
 		content, found = sk.Resources.GetAsset(name)
-	} else if strings.HasPrefix(args.Path, "scripts/") {
-		name := strings.TrimPrefix(args.Path, "scripts/")
+	} else if strings.HasPrefix(resPath, "scripts/") {
+		name := strings.TrimPrefix(resPath, "scripts/")
 		scr, ok2 := sk.Resources.GetScript(name)
 		if ok2 && scr != nil {
 			content, found = scr.Src, true
@@ -228,13 +234,13 @@ func (s *SkillToolset) loadSkillResourceToolHandler(ctx tool.Context, args loadS
 	}
 	if !found {
 		return map[string]any{
-			"error":      fmt.Sprintf("Resource '%s' not found in skill '%s'.", args.Path, args.SkillName),
+			"error":      fmt.Sprintf("Resource '%s' not found in skill '%s'.", resPath, args.SkillName),
 			"error_code": "RESOURCE_NOT_FOUND",
 		}, nil
 	}
 	return map[string]any{
 		"skill_name": sk.Name(),
-		"path":       args.Path,
+		"path":       resPath,
 		"content":    content,
 	}, nil
 }
