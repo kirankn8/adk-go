@@ -259,10 +259,7 @@ type Config struct {
 	// TODO(ngeorgy): consider to switch to jsonschema for input and output schema.
 	// The input schema when agent is used as a tool.
 	InputSchema *genai.Schema
-	// The output schema when agent replies.
-	//
-	// NOTE: when this is set, agent can only reply and cannot use any tools,
-	// such as function tools, RAGs, agent transfer, etc.
+	// Desired shape of the agent's reply. With tools or toolsets, the final answer is enforced via set_model_response.
 	OutputSchema *genai.Schema
 
 	// Callbacks are executed in the order they are provided.

@@ -91,7 +91,6 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
 		}
 
-		// Verify set_model_response tool is present
 		if _, ok := req.Tools["set_model_response"]; !ok {
 			t.Error("req.Tools['set_model_response'] missing")
 		}
@@ -117,7 +116,7 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			s: &State{
 				Model:        &mockLLM{name: "gemini-2.5-flash"},
 				OutputSchema: schema,
-				Tools:        nil, // No tools -> optimization skips processor
+				Tools:        nil, // schema-only: ResponseSchema on request, no shim
 			},
 		}
 
@@ -162,8 +161,33 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 		}
 	})
 
-	t.Run("NoOpWhenNativeSupportAvailable", func(t *testing.T) {
-		// Native support = Vertex AI + Gemini 2.5+
+	t.Run("InjectsToolForNonGeminiModelName", func(t *testing.T) {
+		baseAgent := utils.Must(agent.New(agent.Config{Name: "AnthropicStyleAgent"}))
+		mockAgent := &mockLLMAgent{
+			Agent: baseAgent,
+			s: &State{
+				Model:        &mockLLM{name: "claude-sonnet-4-20250514"},
+				OutputSchema: schema,
+				Tools:        []tool.Tool{&mockTool{name: "other_tool"}},
+			},
+		}
+
+		req := &model.LLMRequest{}
+		ctx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{
+			Agent: mockAgent,
+		})
+
+		events := outputSchemaRequestProcessor(ctx, req, f)
+		for _, err := range events {
+			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
+		}
+
+		if _, ok := req.Tools["set_model_response"]; !ok {
+			t.Error("req.Tools['set_model_response'] missing for non-Gemini model with tools+schema")
+		}
+	})
+
+	t.Run("InjectsToolForVertexGeminiWithTools", func(t *testing.T) {
 		llm := &mockLLM{
 			name:    "gemini-2.5-flash",
 			variant: func() *genai.Backend { x := genai.BackendVertexAI; return &x }(),
@@ -189,8 +213,8 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
 		}
 
-		if _, ok := req.Tools["set_model_response"]; ok {
-			t.Error("set_model_response tool should NOT be added when native support is available")
+		if _, ok := req.Tools["set_model_response"]; !ok {
+			t.Error("req.Tools['set_model_response'] missing for Vertex Gemini with tools+schema")
 		}
 	})
 }

@@ -22,7 +22,6 @@ import (
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
-	"google.golang.org/adk/internal/llminternal/googlellm"
 	"google.golang.org/adk/internal/toolinternal/toolutils"
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
@@ -38,7 +37,7 @@ const (
 		"final answer in the specified schema format."
 )
 
-// outputSchemaRequestProcessor adds the set_model_response tool to handle structured output.
+// outputSchemaRequestProcessor injects set_model_response when OutputSchema is used with tools/toolsets.
 func outputSchemaRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		llmAgent := asLLMAgent(ctx.Agent())
@@ -47,26 +46,22 @@ func outputSchemaRequestProcessor(ctx agent.InvocationContext, req *model.LLMReq
 		}
 
 		state := llmAgent.internal()
-		// Check if we need the processor in the first place.
 		if state.OutputSchema == nil || !needOutputSchemaProcessor(state) {
 			return
 		}
 
-		// Add the set_model_response tool to handle structured output
 		setResponseTool := &setModelResponseTool{schema: state.OutputSchema}
 		if err := toolutils.PackTool(req, setResponseTool); err != nil {
 			yield(nil, fmt.Errorf("failed to pack set_model_response tool: %w", err))
 			return
 		}
 
-		// Add instruction about using the set_model_response tool
 		utils.AppendInstructions(req, instructionForProcessor)
 	}
 }
 
-// createFinalModelResponseEvent creates a final model response event from set_model_response JSON.
+// createFinalModelResponseEvent builds a model text event from the set_model_response payload JSON.
 func createFinalModelResponseEvent(invocationContext agent.InvocationContext, response string) *session.Event {
-	// Create a proper model response event
 	finalEvent := session.NewEvent(invocationContext.InvocationID())
 	finalEvent.Author = invocationContext.Agent().Name()
 	finalEvent.Branch = invocationContext.Branch()
@@ -77,7 +72,7 @@ func createFinalModelResponseEvent(invocationContext agent.InvocationContext, re
 	return finalEvent
 }
 
-// retrieveStructuredModelResponse checks if function response contains set_model_response tool and extract JSON.
+// retrieveStructuredModelResponse returns JSON from a set_model_response function response, or empty if none.
 func retrieveStructuredModelResponse(ev *session.Event) (string, error) {
 	if ev == nil || ev.LLMResponse.Content == nil {
 		return "", nil
@@ -96,15 +91,15 @@ func retrieveStructuredModelResponse(ev *session.Event) (string, error) {
 	return "", nil
 }
 
+// needOutputSchemaProcessor is true when OutputSchema is paired with tools or toolsets (set_model_response path).
 func needOutputSchemaProcessor(state *State) bool {
-	if state == nil || state.Model == nil {
+	if state == nil || state.OutputSchema == nil {
 		return false
 	}
-	hasTools := len(state.Tools) > 0 || len(state.Toolsets) > 0
-	return hasTools && googlellm.NeedsOutputSchemaProcessor(state.Model)
+	return len(state.Tools) > 0 || len(state.Toolsets) > 0
 }
 
-// setModelResponseTool implements tool.Tool and toolinternal.FunctionTool.
+// setModelResponseTool is the structured final-answer tool (tool.Tool, toolinternal.FunctionTool).
 type setModelResponseTool struct {
 	schema *genai.Schema
 }

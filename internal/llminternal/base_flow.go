@@ -218,7 +218,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 				}
 			}
 
-			// If the model response is structured, yield it as a final model response event.
+			// set_model_response: emit a synthetic model message carrying the JSON payload.
 			outputSchemaResponse, err := retrieveStructuredModelResponse(ev)
 			if err != nil {
 				yield(nil, err)
