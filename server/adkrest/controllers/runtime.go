@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -123,6 +124,8 @@ func (c *RuntimeAPIController) RunSSEHandler(rw http.ResponseWriter, req *http.R
 
 	for event, err := range resp {
 		if err != nil {
+			log.Printf("ERROR | adk | run_sse | app=%q user=%q session=%q | agent iterator: %v",
+				runAgentRequest.AppName, runAgentRequest.UserId, runAgentRequest.SessionId, err)
 			_, err := fmt.Fprintf(rw, "Error while running agent: %v\n", err)
 			if err != nil {
 				return newStatusError(fmt.Errorf("failed to write response: %w", err), http.StatusInternalServerError)
@@ -136,6 +139,8 @@ func (c *RuntimeAPIController) RunSSEHandler(rw http.ResponseWriter, req *http.R
 		}
 		err := flashEvent(rc, rw, *event)
 		if err != nil {
+			log.Printf("ERROR | adk | run_sse | app=%q user=%q session=%q | flashEvent: %v",
+				runAgentRequest.AppName, runAgentRequest.UserId, runAgentRequest.SessionId, err)
 			return err
 		}
 	}
