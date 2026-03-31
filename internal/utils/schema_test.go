@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/genai"
 )
 
@@ -204,6 +205,60 @@ func TestMatchType(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCoerceFlexibleOutputArgs(t *testing.T) {
+	whyLike := &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"findings":             {Type: genai.TypeString},
+			"execution_sequence":   {Type: genai.TypeString},
+			"decision_points":      {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+			"why":                  {Type: genai.TypeString},
+			"other_error_patterns": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+		},
+		Required: []string{"findings", "execution_sequence", "decision_points", "why"},
+	}
+
+	t.Run("whyLikeMismatchedTypes", func(t *testing.T) {
+		m := map[string]any{
+			"findings":           []any{"a", "b"},
+			"execution_sequence": []any{"1. boot", "2. fail"},
+			"decision_points":    "Registry vs auth → registry\nKubeconfig present → no",
+			"why":                "root",
+			"other_error_patterns": []any{},
+		}
+		CoerceFlexibleOutputArgs(m, whyLike)
+		if err := ValidateMapOnSchema(m, whyLike, false); err != nil {
+			t.Fatalf("after coerce: %v", err)
+		}
+		if got, want := m["findings"], "a\nb"; got != want {
+			t.Errorf("findings = %q, want %q", got, want)
+		}
+		wantDP := []any{"Registry vs auth → registry", "Kubeconfig present → no"}
+		if diff := cmp.Diff(wantDP, m["decision_points"]); diff != "" {
+			t.Errorf("decision_points (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("lowercaseSchemaTypes", func(t *testing.T) {
+		schema := &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"text":  {Type: "string"},
+				"lines": {Type: "array", Items: &genai.Schema{Type: "string"}},
+			},
+			Required: []string{"text", "lines"},
+		}
+		m := map[string]any{
+			"text":  []any{"x"},
+			"lines": "one",
+		}
+		CoerceFlexibleOutputArgs(m, schema)
+		if err := ValidateMapOnSchema(m, schema, false); err != nil {
+			t.Fatalf("after coerce: %v", err)
+		}
+	})
 }
 
 func TestValidateMapOnSchema(t *testing.T) {

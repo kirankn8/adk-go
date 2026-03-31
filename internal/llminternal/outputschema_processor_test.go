@@ -372,4 +372,45 @@ func TestSetModelResponseTool(t *testing.T) {
 			t.Error("Expected validation error for missing required field, got nil")
 		}
 	})
+
+	t.Run("RunCoercesWhyLikeShapes", func(t *testing.T) {
+		whySchema := &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"findings":             {Type: genai.TypeString},
+				"execution_sequence":   {Type: genai.TypeString},
+				"decision_points":      {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+				"why":                  {Type: genai.TypeString},
+				"other_error_patterns": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+			},
+			Required: []string{"findings", "execution_sequence", "decision_points", "why"},
+		}
+		ti := &setModelResponseTool{schema: whySchema}
+		invCtx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{})
+		toolCtx := toolinternal.NewToolContext(invCtx, "", nil, nil)
+
+		input := map[string]any{
+			"findings":             []any{"obs1", "obs2"},
+			"execution_sequence":   []any{"step A", "step B"},
+			"decision_points":      "C1 → ok",
+			"why":                  "therefore",
+			"other_error_patterns": []any{},
+		}
+		got, err := ti.Run(toolCtx, input)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if _, ok := input["findings"].([]any); !ok {
+			t.Fatal("expected input findings unchanged as []any")
+		}
+		if got["findings"] != "obs1\nobs2" {
+			t.Errorf("findings = %q", got["findings"])
+		}
+		if got["execution_sequence"] != "step A\nstep B" {
+			t.Errorf("execution_sequence = %q", got["execution_sequence"])
+		}
+		if diff := cmp.Diff([]any{"C1 → ok"}, got["decision_points"]); diff != "" {
+			t.Errorf("decision_points (-want +got):\n%s", diff)
+		}
+	})
 }

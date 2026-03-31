@@ -129,8 +129,10 @@ func (t *setModelResponseTool) Run(ctx tool.Context, args any) (map[string]any, 
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type for set_model_response: %T", args)
 	}
-	if err := utils.ValidateMapOnSchema(m, t.schema, false); err != nil {
+	coerced := utils.ShallowCopyMap(m)
+	utils.CoerceFlexibleOutputArgs(coerced, t.schema)
+	if err := utils.ValidateMapOnSchema(coerced, t.schema, false); err != nil {
 		return nil, fmt.Errorf("invalid output schema: %w", err)
 	}
-	return m, nil
+	return coerced, nil
 }
