@@ -83,10 +83,6 @@ func (s *SkillToolset) Tools(ctx agent.ReadonlyContext) ([]tool.Tool, error) {
 	return s.tools, nil
 }
 
-//func (s *SkillToolset) GetTools() []tool.Tool {
-//	return s.tools
-//}
-
 func (s *SkillToolset) ProcessRequest(ctx tool.Context, req *model.LLMRequest) error {
 	skillList := s.listSkills()
 	skillXML := skills.FormatSkillsAsXML(skillList)
