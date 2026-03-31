@@ -323,3 +323,126 @@ func TestRunSkillScriptTool(t *testing.T) {
 		t.Errorf("alias stdout: got %q want %q", outputMap["stdout"], "24.0\n")
 	}
 }
+
+func TestRunSkillScriptSteersToLoadSkillResource(t *testing.T) {
+	skillList := createMockSkill(t)
+	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
+	ts, err := NewSkillToolset(skillList, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+		SkillName:  "multiplication-calculator",
+		ScriptPath: "scripts/multiply.py",
+		Args:       []string{"2", "3"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != nil {
+		t.Fatalf("unexpected error: %v", res)
+	}
+	res, err = ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+		SkillName:  "multiplication-calculator",
+		ScriptPath: "references/guide.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != "USE_LOAD_SKILL_RESOURCE" {
+		t.Fatalf("error_code=%v", res["error_code"])
+	}
+}
+
+func TestRunSkillScriptNotFoundDidYouMean(t *testing.T) {
+	skillList := createMockSkill(t)
+	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
+	ts, err := NewSkillToolset(skillList, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+		SkillName:  "multiplication-calculator",
+		ScriptPath: "scripts/multipy.py",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != "SCRIPT_NOT_FOUND" {
+		t.Fatalf("error_code=%v", res["error_code"])
+	}
+	if res["did_you_mean_path"] != "scripts/multiply.py" {
+		t.Fatalf("did_you_mean_path=%v", res["did_you_mean_path"])
+	}
+	if res["available_scripts"] != nil {
+		t.Fatalf("expected no available_scripts when did_you_mean_path is set, got %v", res["available_scripts"])
+	}
+}
+
+func TestRunSkillScriptNotFoundAvailableScripts(t *testing.T) {
+	skillList := createMockSkill(t)
+	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
+	ts, err := NewSkillToolset(skillList, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+		SkillName:  "multiplication-calculator",
+		ScriptPath: "scripts/unknown_runner.py",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != "SCRIPT_NOT_FOUND" {
+		t.Fatalf("error_code=%v", res["error_code"])
+	}
+	if res["did_you_mean_path"] != nil {
+		t.Fatalf("unexpected did_you_mean_path=%v", res["did_you_mean_path"])
+	}
+	list, ok := res["available_scripts"].([]string)
+	if !ok || len(list) == 0 {
+		t.Fatalf("available_scripts: got %T %v", res["available_scripts"], res["available_scripts"])
+	}
+	if list[0] != "scripts/multiply.py" {
+		t.Fatalf("available_scripts[0]=%q want scripts/multiply.py", list[0])
+	}
+}
+
+func TestLoadSkillResourceMissingPrefixRecovery(t *testing.T) {
+	skillList := createMockSkill(t)
+	ts, err := NewSkillToolset(skillList, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
+		SkillName: "multiplication-calculator",
+		Path:      "multiply.py",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != "MISSING_RESOURCE_PREFIX" {
+		t.Fatalf("error_code=%v", res["error_code"])
+	}
+	if res["did_you_mean_path"] != "scripts/multiply.py" {
+		t.Fatalf("did_you_mean_path=%v", res["did_you_mean_path"])
+	}
+}
+
+func TestLoadSkillDidYouMean(t *testing.T) {
+	skillList := createMockSkill(t)
+	ts, err := NewSkillToolset(skillList, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ts.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculatr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["error_code"] != "SKILL_NOT_FOUND" {
+		t.Fatalf("error_code=%v", res["error_code"])
+	}
+	if res["did_you_mean"] != "multiplication-calculator" {
+		t.Fatalf("did_you_mean=%v", res["did_you_mean"])
+	}
+}

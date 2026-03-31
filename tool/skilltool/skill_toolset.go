@@ -164,10 +164,7 @@ func (s *SkillToolset) loadSkillToolHandler(ctx tool.Context, args loadSkillArgs
 	}
 	sk, ok := s.getSkill(id)
 	if !ok {
-		return map[string]any{
-			"error":      fmt.Sprintf("Skill '%s' not found.", id),
-			"error_code": "SKILL_NOT_FOUND",
-		}, nil
+		return s.skillNotFoundPayload(id), nil
 	}
 
 	return map[string]any{
@@ -194,51 +191,49 @@ type loadSkillResourceArgs struct {
 }
 
 func (s *SkillToolset) loadSkillResourceToolHandler(ctx tool.Context, args loadSkillResourceArgs) (map[string]any, error) {
-	if strings.TrimSpace(args.SkillName) == "" {
+	skillName := strings.TrimSpace(args.SkillName)
+	if skillName == "" {
 		return map[string]any{"error": "Skill name is required.", "error_code": "MISSING_SKILL_NAME"}, nil
+	}
+	sk, ok := s.getSkill(skillName)
+	if !ok {
+		return s.skillNotFoundPayload(skillName), nil
 	}
 	resPath := strings.TrimSpace(args.Path)
 	if resPath == "" {
 		resPath = strings.TrimSpace(args.ResourcePath)
 	}
 	if resPath == "" {
-		return map[string]any{"error": "Resource path is required (use path or resource_path).", "error_code": "MISSING_RESOURCE_PATH"}, nil
+		return s.emptyResourcePathPayload(sk), nil
 	}
-	sk, ok := s.getSkill(args.SkillName)
-	if !ok {
-		return map[string]any{"error": fmt.Sprintf("Skill '%s' not found.", args.SkillName), "error_code": "SKILL_NOT_FOUND"}, nil
+
+	trialPath := normalizeBundledPath(resPath)
+	trialPath, hadRedundant := collapseDoublePrefixes(trialPath)
+	trialPath, aliasFrom := applyWrongPrefixAlias(trialPath)
+
+	if isOnlySkillMDPath(trialPath) {
+		return useLoadSkillPayload(sk.Name()), nil
 	}
-	var content string
-	var found bool
-	if strings.HasPrefix(resPath, "references/") {
-		name := strings.TrimPrefix(resPath, "references/")
-		content, found = sk.Resources.GetReference(name)
-	} else if strings.HasPrefix(resPath, "assets/") {
-		name := strings.TrimPrefix(resPath, "assets/")
-		content, found = sk.Resources.GetAsset(name)
-	} else if strings.HasPrefix(resPath, "scripts/") {
-		name := strings.TrimPrefix(resPath, "scripts/")
-		scr, ok2 := sk.Resources.GetScript(name)
-		if ok2 && scr != nil {
-			content, found = scr.Src, true
+
+	if pre, key, hasPre := splitVirtualPrefix(trialPath); hasPre {
+		if isUnsafeVirtualKey(key) || key == "" {
+			return s.junkResourceKeyPayload(sk, pre), nil
 		}
-	} else {
-		return map[string]any{
-			"error":      "Path must start with 'references/', 'assets/', or 'scripts/'.",
-			"error_code": "INVALID_RESOURCE_PATH",
-		}, nil
+		if content, ok := lookupVirtual(sk, trialPath); ok {
+			out := map[string]any{
+				"skill_name": sk.Name(),
+				"path":       trialPath,
+				"content":    content,
+			}
+			if aliasFrom != "" || hadRedundant {
+				out["corrected_path"] = trialPath
+			}
+			return out, nil
+		}
+		return s.resourceNotFoundPayload(sk, trialPath, pre, key), nil
 	}
-	if !found {
-		return map[string]any{
-			"error":      fmt.Sprintf("Resource '%s' not found in skill '%s'.", resPath, args.SkillName),
-			"error_code": "RESOURCE_NOT_FOUND",
-		}, nil
-	}
-	return map[string]any{
-		"skill_name": sk.Name(),
-		"path":       resPath,
-		"content":    content,
-	}, nil
+
+	return s.missingPrefixPayload(sk, skillName, trialPath), nil
 }
 
 // loadSkillResourceTool Tool to load resources (references, assets, or scripts) from a skill."""
@@ -272,23 +267,40 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 		execArgs = append(execArgs, strings.Fields(line)...)
 	}
 
-	if strings.TrimSpace(args.SkillName) == "" {
+	skillName := strings.TrimSpace(args.SkillName)
+	if skillName == "" {
 		return map[string]any{"error": "Skill name is required.", "error_code": "MISSING_SKILL_NAME"}, nil
 	}
 	if scriptPath == "" {
 		return map[string]any{"error": "Script path is required (use script_path or script).", "error_code": "MISSING_SCRIPT_PATH"}, nil
 	}
-	sk, ok := s.getSkill(args.SkillName)
+	sk, ok := s.getSkill(skillName)
 	if !ok {
-		return map[string]any{"error": fmt.Sprintf("Skill '%s' not found.", args.SkillName), "error_code": "SKILL_NOT_FOUND"}, nil
-	}
-	name := scriptPath
-	if strings.HasPrefix(scriptPath, "scripts/") {
-		name = strings.TrimPrefix(scriptPath, "scripts/")
+		return s.skillNotFoundPayload(skillName), nil
 	}
 
-	if scr, ok := sk.Resources.GetScript(name); !ok || scr == nil {
-		return map[string]any{"error": fmt.Sprintf("Script '%s' not found in skill '%s'.", scriptPath, args.SkillName), "error_code": "SCRIPT_NOT_FOUND"}, nil
+	sp := normalizeBundledPath(scriptPath)
+	sp, redundant := collapseDoublePrefixes(sp)
+
+	if isOnlySkillMDPath(sp) {
+		return useLoadSkillPayload(sk.Name()), nil
+	}
+
+	if isDocLikeForRunScript(sp) {
+		return useLoadSkillResourcePayload(sk.Name(), sp), nil
+	}
+
+	key, errPayload := secureScriptKeyUnderSkill(sk, sp)
+	if errPayload != nil {
+		return errPayload, nil
+	}
+
+	canonical := "scripts/" + key
+	if sk.Resources == nil {
+		return s.scriptNotFoundPayload(sk, canonical, key), nil
+	}
+	if scr, ok := sk.Resources.GetScript(key); !ok || scr == nil {
+		return s.scriptNotFoundPayload(sk, canonical, key), nil
 	}
 	if s.codeExecutor == nil {
 		return map[string]any{
@@ -300,7 +312,7 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 	log.Printf("runSkillScriptToolHandler args is %s", string(argsStr))
 	codeExecutorResult, err := s.codeExecutor.ExecuteCode(nil, code_executors.CodeExecutionInput{
 		Args:        execArgs,
-		ScriptPath:  filepath.Join(sk.GetSkillPath(), "scripts", name),
+		ScriptPath:  filepath.Join(sk.GetSkillPath(), "scripts", key),
 		InputFiles:  nil,
 		ExecutionID: ctx.InvocationID(),
 	})
@@ -308,19 +320,23 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 	log.Printf("codeExecutor result is %s", string(resultStr))
 	if err != nil {
 		return map[string]any{
-			"error":      fmt.Sprintf("Failed to execute script '%s':\n%s", scriptPath, err.Error()),
+			"error":      fmt.Sprintf("Failed to execute script '%s':\n%s", canonical, err.Error()),
 			"error_code": "EXECUTION_ERROR",
 		}, nil
 	}
 	status := "success"
 
-	return map[string]any{
+	out := map[string]any{
 		"skill_name":  sk.Name(),
-		"script_path": scriptPath,
+		"script_path": canonical,
 		"stdout":      codeExecutorResult.StdOut,
 		"stderr":      codeExecutorResult.StdErr,
 		"status":      status,
-	}, nil
+	}
+	if redundant {
+		out["corrected_path"] = canonical
+	}
+	return out, nil
 }
 
 // runSkillScriptTool Tool to execute scripts from a skill's scripts/ directory."""
