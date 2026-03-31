@@ -18,6 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"maps"
+	"slices"
+	"strings"
 
 	"google.golang.org/genai"
 
@@ -35,6 +38,12 @@ const (
 		"required structured format. After using any other tools needed " +
 		"to complete the task, always call set_model_response with your " +
 		"final answer in the specified schema format."
+
+	// maxSetModelResponseSchemaFailureAttempts is how many consecutive invalid
+	// set_model_response results (e.g. output schema validation) are allowed before
+	// emitting a terminal synthetic model message. Value 4 => one failed attempt
+	// plus up to 3 automatic LLM retries in the same agent run.
+	maxSetModelResponseSchemaFailureAttempts = 4
 )
 
 // outputSchemaRequestProcessor injects set_model_response when OutputSchema is used with tools/toolsets.
@@ -91,6 +100,129 @@ func retrieveStructuredModelResponse(ev *session.Event) (string, error) {
 	return "", nil
 }
 
+// schemaTypeShortLabel is a compact type name for error hints (not full JSON Schema).
+func schemaTypeShortLabel(s *genai.Schema) string {
+	if s == nil {
+		return "ANY"
+	}
+	t := genai.Type(strings.ToUpper(string(s.Type)))
+	switch t {
+	case genai.TypeArray:
+		if s.Items != nil {
+			return "ARRAY[" + schemaTypeShortLabel(s.Items) + "]"
+		}
+		return "ARRAY"
+	case genai.TypeObject:
+		return "OBJECT"
+	case "":
+		return "ANY"
+	default:
+		return string(t)
+	}
+}
+
+const maxOutputSchemaSummaryRunes = 1200
+
+// shortOutputSchemaSummary builds a one-line hint of allowed top-level fields for set_model_response.
+func shortOutputSchemaSummary(schema *genai.Schema) string {
+	if schema == nil || len(schema.Properties) == 0 {
+		return ""
+	}
+	required := make(map[string]bool, len(schema.Required))
+	for _, k := range schema.Required {
+		required[k] = true
+	}
+	keys := slices.Sorted(maps.Keys(schema.Properties))
+	var b strings.Builder
+	b.WriteString("Allowed fields: ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(k)
+		b.WriteByte('(')
+		b.WriteString(schemaTypeShortLabel(schema.Properties[k]))
+		if required[k] {
+			b.WriteString(", required")
+		}
+		b.WriteByte(')')
+	}
+	s := b.String()
+	if len(s) > maxOutputSchemaSummaryRunes {
+		return s[:maxOutputSchemaSummaryRunes] + "…"
+	}
+	return s
+}
+
+func setModelResponseSchemaFailureCountKey() string {
+	return session.KeyPrefixTemp + "adk_set_model_response_schema_failures"
+}
+
+func readSetModelResponseFailureCount(st session.State) int {
+	if st == nil {
+		return 0
+	}
+	v, err := st.Get(setModelResponseSchemaFailureCountKey())
+	if err != nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case float64:
+		return int(x)
+	default:
+		return 0
+	}
+}
+
+// setModelResponseHasErrorInEvent reports whether ev contains a set_model_response
+// tool result with an "error" field (schema validation or other tool failure).
+func setModelResponseHasErrorInEvent(ev *session.Event) bool {
+	if ev == nil || ev.LLMResponse.Content == nil {
+		return false
+	}
+	for _, part := range ev.LLMResponse.Content.Parts {
+		fr := part.FunctionResponse
+		if fr == nil || fr.Name != "set_model_response" {
+			continue
+		}
+		if fr.Response == nil {
+			return false
+		}
+		_, hasErr := fr.Response["error"]
+		return hasErr
+	}
+	return false
+}
+
+// prepareSetModelResponseSyntheticFinal updates temp session state for set_model_response
+// validation failures and returns whether to emit the terminal synthetic model JSON event.
+// When false, Flow.Run issues another LLM request so the model can fix the payload.
+func prepareSetModelResponseSyntheticFinal(ctx agent.InvocationContext, toolResponseEv *session.Event) (emit bool, err error) {
+	st := ctx.Session().State()
+	key := setModelResponseSchemaFailureCountKey()
+	if !setModelResponseHasErrorInEvent(toolResponseEv) {
+		if err := st.Set(key, 0); err != nil {
+			return false, fmt.Errorf("session state set %q: %w", key, err)
+		}
+		return true, nil
+	}
+	n := readSetModelResponseFailureCount(st) + 1
+	if err := st.Set(key, n); err != nil {
+		return false, fmt.Errorf("session state set %q: %w", key, err)
+	}
+	if n < maxSetModelResponseSchemaFailureAttempts {
+		return false, nil
+	}
+	if err := st.Set(key, 0); err != nil {
+		return false, fmt.Errorf("session state set %q: %w", key, err)
+	}
+	return true, nil
+}
+
 // needOutputSchemaProcessor is true when OutputSchema is paired with tools or toolsets (set_model_response path).
 func needOutputSchemaProcessor(state *State) bool {
 	if state == nil || state.OutputSchema == nil {
@@ -132,6 +264,9 @@ func (t *setModelResponseTool) Run(ctx tool.Context, args any) (map[string]any, 
 	coerced := utils.ShallowCopyMap(m)
 	utils.CoerceFlexibleOutputArgs(coerced, t.schema)
 	if err := utils.ValidateMapOnSchema(coerced, t.schema, false); err != nil {
+		if hint := shortOutputSchemaSummary(t.schema); hint != "" {
+			return nil, fmt.Errorf("invalid output schema: %w. %s", err, hint)
+		}
 		return nil, fmt.Errorf("invalid output schema: %w", err)
 	}
 	return coerced, nil

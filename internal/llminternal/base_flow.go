@@ -225,8 +225,15 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 				return
 			}
 			if outputSchemaResponse != "" {
-				if !yield(createFinalModelResponseEvent(ctx, outputSchemaResponse), nil) {
+				emitFinal, prepErr := prepareSetModelResponseSyntheticFinal(ctx, ev)
+				if prepErr != nil {
+					yield(nil, prepErr)
 					return
+				}
+				if emitFinal {
+					if !yield(createFinalModelResponseEvent(ctx, outputSchemaResponse), nil) {
+						return
+					}
 				}
 			}
 			// Actually handle "transfer_to_agent" tool. The function call sets the ev.Actions.TransferToAgent field.

@@ -371,6 +371,22 @@ func TestSetModelResponseTool(t *testing.T) {
 		if err == nil {
 			t.Error("Expected validation error for missing required field, got nil")
 		}
+		if err != nil && !strings.Contains(err.Error(), "Allowed fields") {
+			t.Errorf("error should include schema summary hint: %v", err)
+		}
+	})
+
+	t.Run("RunValidationFailure_UnknownKeyIncludesHint", func(t *testing.T) {
+		invCtx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{})
+		toolCtx := toolinternal.NewToolContext(invCtx, "", nil, nil)
+		input := map[string]any{"count": 1.0, "extra": "nope"}
+		_, err := toolInstance.Run(toolCtx, input)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "Allowed fields") || !strings.Contains(err.Error(), "count(INTEGER, required)") {
+			t.Errorf("want hint with count field, got: %v", err)
+		}
 	})
 
 	t.Run("RunCoercesWhyLikeShapes", func(t *testing.T) {
@@ -413,4 +429,89 @@ func TestSetModelResponseTool(t *testing.T) {
 			t.Errorf("decision_points (-want +got):\n%s", diff)
 		}
 	})
+}
+
+func TestSetModelResponseHasErrorInEvent(t *testing.T) {
+	ev := session.NewEvent("e1")
+	ev.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Role: "user",
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"error": "invalid output schema"},
+				},
+			}},
+		},
+	}
+	if !setModelResponseHasErrorInEvent(ev) {
+		t.Fatal("expected true for error payload")
+	}
+	ev2 := session.NewEvent("e2")
+	ev2.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"count": 1.0},
+				},
+			}},
+		},
+	}
+	if setModelResponseHasErrorInEvent(ev2) {
+		t.Fatal("expected false for success-shaped payload")
+	}
+}
+
+func TestPrepareSetModelResponseSyntheticFinal_RetriesThenTerminal(t *testing.T) {
+	svc := session.InMemoryService()
+	resp, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "a", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := icontext.NewInvocationContext(t.Context(), icontext.InvocationContextParams{
+		Session: resp.Session,
+	})
+	badEv := session.NewEvent("e1")
+	badEv.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"error": "invalid output schema"},
+				},
+			}},
+		},
+	}
+	for i := 0; i < 3; i++ {
+		emit, err := prepareSetModelResponseSyntheticFinal(inv, badEv)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+		if emit {
+			t.Fatalf("attempt %d: want emit false (LLM retry), got true", i+1)
+		}
+	}
+	emit, err := prepareSetModelResponseSyntheticFinal(inv, badEv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !emit {
+		t.Fatal("4th consecutive failure: want emit true (terminal error event)")
+	}
+	goodEv := session.NewEvent("e2")
+	goodEv.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"is_satisfied": true},
+				},
+			}},
+		},
+	}
+	emit, err = prepareSetModelResponseSyntheticFinal(inv, goodEv)
+	if err != nil || !emit {
+		t.Fatalf("after success-shaped response: emit=%v err=%v", emit, err)
+	}
 }
