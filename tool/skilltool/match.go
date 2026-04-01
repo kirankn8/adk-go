@@ -146,43 +146,34 @@ func isDocLikeForRunScript(sp string) bool {
 }
 
 func levenshtein(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
 	}
-	if len(b) == 0 {
-		return len(a)
+	if len(rb) == 0 {
+		return len(ra)
 	}
-	if len(a) > len(b) {
-		a, b = b, a
+	if len(ra) > len(rb) {
+		ra, rb = rb, ra
 	}
-	row := make([]int, len(b)+1)
-	for j := 0; j <= len(b); j++ {
+	row := make([]int, len(rb)+1)
+	for j := 0; j <= len(rb); j++ {
 		row[j] = j
 	}
-	for i := 1; i <= len(a); i++ {
+	for i := 1; i <= len(ra); i++ {
 		prev := row[0]
 		row[0] = i
-		for j := 1; j <= len(b); j++ {
+		for j := 1; j <= len(rb); j++ {
 			cur := row[j]
 			cost := 0
-			if a[i-1] != b[j-1] {
+			if ra[i-1] != rb[j-1] {
 				cost = 1
 			}
-			row[j] = min3(row[j]+1, row[j-1]+1, prev+cost)
+			row[j] = min(row[j]+1, row[j-1]+1, prev+cost)
 			prev = cur
 		}
 	}
-	return row[len(b)]
-}
-
-func min3(a, b, c int) int {
-	if a <= b && a <= c {
-		return a
-	}
-	if b <= c {
-		return b
-	}
-	return c
+	return row[len(rb)]
 }
 
 func defaultLevMax(queryLen int) int {

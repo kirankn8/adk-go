@@ -99,7 +99,10 @@ func handleNonFunctionCallParts(responsePart *genai.Part, preserved *[]*genai.Pa
 		return
 	}
 	text := responsePart.Text
-	if text != "" && strings.Contains(text, FinalAnswerTag) {
+	if text == "" {
+		return
+	}
+	if strings.Contains(text, FinalAnswerTag) {
 		reasoningText, finalAnswerText := splitByLastPattern(text, FinalAnswerTag)
 		if reasoningText != "" {
 			rp := &genai.Part{Text: reasoningText}
@@ -111,15 +114,16 @@ func handleNonFunctionCallParts(responsePart *genai.Part, preserved *[]*genai.Pa
 		}
 		return
 	}
-	responseText := text
-	if responseText != "" && (strings.HasPrefix(responseText, PlanningTag) ||
-		strings.HasPrefix(responseText, ReasoningTag) ||
-		strings.HasPrefix(responseText, ActionTag) ||
-		strings.HasPrefix(responseText, ReplanningTag)) {
+	if strings.HasPrefix(text, PlanningTag) ||
+		strings.HasPrefix(text, ReasoningTag) ||
+		strings.HasPrefix(text, ActionTag) ||
+		strings.HasPrefix(text, ReplanningTag) {
 		cp := *responsePart
 		markAsThought(&cp)
 		*preserved = append(*preserved, &cp)
+		return
 	}
+	*preserved = append(*preserved, responsePart)
 }
 
 func markAsThought(responsePart *genai.Part) {
@@ -154,14 +158,12 @@ The final answer should be precise and follow query formatting requirements. Som
 `
 
 	toolCodePreamble := `
-Below are the requirements for the tool code:
+Below are the requirements for tool use:
 
 **Custom Tools:** The available tools are described in the context and can be directly used.
-- Code must be valid self-contained Python snippets with no imports and no references to tools or Python libraries that are not in the context.
-- You cannot use any parameters or fields that are not explicitly defined in the APIs in the context.
-- The code snippets should be readable, efficient, and directly relevant to the user query and reasoning steps.
-- When using the tools, you should use the library name together with the function name, e.g., vertex_search.search().
-- If Python libraries are not provided in the context, NEVER write your own code other than the function calls using the provided tools.
+- You cannot use any parameters or fields that are not explicitly defined in the tool declarations in the context.
+- Tool calls should be directly relevant to the user query and reasoning steps.
+- NEVER invent tool names or parameters that are not provided in the context.
 `
 
 	userInputPreamble := `

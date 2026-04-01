@@ -87,6 +87,9 @@ func (s *SkillToolset) ProcessRequest(ctx tool.Context, req *model.LLMRequest) e
 	skillList := s.listSkills()
 	skillXML := skills.FormatSkillsAsXML(skillList)
 	instruction := []string{DEFAULT_SKILL_SYSTEM_INSTRUCTION, skillXML}
+	if req.Config == nil {
+		req.Config = &genai.GenerateContentConfig{}
+	}
 	if req.Config.SystemInstruction == nil {
 		req.Config.SystemInstruction = &genai.Content{
 			Parts: []*genai.Part{
@@ -262,8 +265,10 @@ func (s *SkillToolset) runSkillScriptToolHandler(ctx tool.Context, args runSkill
 	if scriptPath == "" {
 		scriptPath = strings.TrimSpace(args.Script)
 	}
-	execArgs := append([]string(nil), args.Args...)
-	if line := strings.TrimSpace(args.ArgsLine); line != "" {
+	var execArgs []string
+	if len(args.Args) > 0 {
+		execArgs = append(execArgs, args.Args...)
+	} else if line := strings.TrimSpace(args.ArgsLine); line != "" {
 		execArgs = append(execArgs, strings.Fields(line)...)
 	}
 

@@ -51,10 +51,14 @@ func (s *UnsafeLocalCodeExecutor) ExecuteCode(ctx agent.InvocationContext, input
 	}
 
 	var cmd *exec.Cmd
-	excCtx := context.Background()
+	parent := context.Background()
+	if ctx != nil {
+		parent = ctx
+	}
+	excCtx := parent
 	if s.Timeout > 0 {
 		var cancel context.CancelFunc
-		excCtx, cancel = context.WithTimeout(context.Background(), s.Timeout)
+		excCtx, cancel = context.WithTimeout(parent, s.Timeout)
 		defer cancel()
 	}
 

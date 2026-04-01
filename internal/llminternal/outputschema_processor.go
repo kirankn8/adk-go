@@ -148,21 +148,20 @@ func shortOutputSchemaSummary(schema *genai.Schema) string {
 		b.WriteByte(')')
 	}
 	s := b.String()
-	if len(s) > maxOutputSchemaSummaryRunes {
-		return s[:maxOutputSchemaSummaryRunes] + "…"
+	r := []rune(s)
+	if len(r) > maxOutputSchemaSummaryRunes {
+		return string(r[:maxOutputSchemaSummaryRunes]) + "…"
 	}
 	return s
 }
 
-func setModelResponseSchemaFailureCountKey() string {
-	return session.KeyPrefixTemp + "adk_set_model_response_schema_failures"
-}
+const setModelResponseSchemaFailureCountKey = session.KeyPrefixTemp + "adk_set_model_response_schema_failures"
 
 func readSetModelResponseFailureCount(st session.State) int {
 	if st == nil {
 		return 0
 	}
-	v, err := st.Get(setModelResponseSchemaFailureCountKey())
+	v, err := st.Get(setModelResponseSchemaFailureCountKey)
 	if err != nil {
 		return 0
 	}
@@ -190,10 +189,11 @@ func setModelResponseHasErrorInEvent(ev *session.Event) bool {
 			continue
 		}
 		if fr.Response == nil {
-			return false
+			continue
 		}
-		_, hasErr := fr.Response["error"]
-		return hasErr
+		if _, hasErr := fr.Response["error"]; hasErr {
+			return true
+		}
 	}
 	return false
 }
@@ -203,7 +203,7 @@ func setModelResponseHasErrorInEvent(ev *session.Event) bool {
 // When false, Flow.Run issues another LLM request so the model can fix the payload.
 func prepareSetModelResponseSyntheticFinal(ctx agent.InvocationContext, toolResponseEv *session.Event) (emit bool, err error) {
 	st := ctx.Session().State()
-	key := setModelResponseSchemaFailureCountKey()
+	key := setModelResponseSchemaFailureCountKey
 	if !setModelResponseHasErrorInEvent(toolResponseEv) {
 		if err := st.Set(key, 0); err != nil {
 			return false, fmt.Errorf("session state set %q: %w", key, err)

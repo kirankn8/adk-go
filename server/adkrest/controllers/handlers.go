@@ -55,9 +55,7 @@ func (tw *trackingWriter) WriteHeader(code int) {
 }
 
 func (tw *trackingWriter) Write(b []byte) (int, error) {
-	if len(b) > 0 {
-		tw.started = true
-	}
+	tw.started = true
 	return tw.ResponseWriter.Write(b)
 }
 

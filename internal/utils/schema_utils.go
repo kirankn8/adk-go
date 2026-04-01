@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 
 	"google.golang.org/genai"
@@ -78,27 +77,27 @@ func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) {
 }
 
 func joinSliceAsNewlines(v any) (string, bool) {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+	items, ok := v.([]any)
+	if !ok {
 		return "", false
 	}
 	var b strings.Builder
-	for i := 0; i < rv.Len(); i++ {
+	for i, item := range items {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprint(&b, rv.Index(i).Interface())
+		fmt.Fprint(&b, item)
 	}
 	return b.String(), true
 }
 
 func matchSliceOfStrings(v any) bool {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Slice {
+	items, ok := v.([]any)
+	if !ok {
 		return false
 	}
-	for i := 0; i < rv.Len(); i++ {
-		if _, ok := rv.Index(i).Interface().(string); !ok {
+	for _, item := range items {
+		if _, ok := item.(string); !ok {
 			return false
 		}
 	}
@@ -151,15 +150,15 @@ func matchType(value any, schema *genai.Schema, isInput bool) (bool, error) {
 		_, ok := value.(float64)
 		return ok, nil
 	case genai.TypeArray:
-		val := reflect.ValueOf(value)
-		if val.Kind() != reflect.Slice {
+		items, ok := value.([]any)
+		if !ok {
 			return false, nil
 		}
 		if schema.Items == nil {
 			return false, fmt.Errorf("array schema missing items definition")
 		}
-		for i := 0; i < val.Len(); i++ {
-			ok, err := matchType(val.Index(i).Interface(), schema.Items, isInput)
+		for i, item := range items {
+			ok, err := matchType(item, schema.Items, isInput)
 			if err != nil {
 				return false, fmt.Errorf("array item %d: %w", i, err)
 			}
