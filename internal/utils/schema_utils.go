@@ -45,12 +45,13 @@ func normalizedSchemaType(t genai.Type) genai.Type {
 //   - schema array of strings + model sent one string → split on newlines or wrap as single element
 //
 // It mutates m in place. Unknown or already-valid shapes are left unchanged.
-func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) {
+func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) map[string]any {
 	if m == nil || schema == nil || schema.Properties == nil {
-		return
+		return m
 	}
+	out := ShallowCopyMap(m)
 	for key, propSchema := range schema.Properties {
-		v, ok := m[key]
+		v, ok := out[key]
 		if !ok || v == nil {
 			continue
 		}
@@ -60,7 +61,7 @@ func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) {
 				continue
 			}
 			if s, ok := joinSliceAsNewlines(v); ok {
-				m[key] = s
+				out[key] = s
 			}
 		case genai.TypeArray:
 			if propSchema.Items == nil || normalizedSchemaType(propSchema.Items.Type) != genai.TypeString {
@@ -70,10 +71,11 @@ func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) {
 				continue
 			}
 			if s, ok := v.(string); ok {
-				m[key] = stringToStringSliceItems(s)
+				out[key] = stringToStringSliceItems(s)
 			}
 		}
 	}
+	return out
 }
 
 func joinSliceAsNewlines(v any) (string, bool) {

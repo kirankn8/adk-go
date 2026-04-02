@@ -231,6 +231,20 @@ func needOutputSchemaProcessor(state *State) bool {
 	return len(state.Tools) > 0 || len(state.Toolsets) > 0
 }
 
+// stripUnknownOutputArgs returns a copy of args containing only keys defined in the schema's Properties.
+func stripUnknownOutputArgs(args map[string]any, schema *genai.Schema) map[string]any {
+	if schema == nil || len(schema.Properties) == 0 {
+		return args
+	}
+	out := make(map[string]any, len(schema.Properties))
+	for k, v := range args {
+		if _, ok := schema.Properties[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // setModelResponseTool is the structured final-answer tool (tool.Tool, toolinternal.FunctionTool).
 type setModelResponseTool struct {
 	schema *genai.Schema
@@ -261,8 +275,8 @@ func (t *setModelResponseTool) Run(ctx tool.Context, args any) (map[string]any, 
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type for set_model_response: %T", args)
 	}
-	coerced := utils.ShallowCopyMap(m)
-	utils.CoerceFlexibleOutputArgs(coerced, t.schema)
+	coerced := utils.CoerceFlexibleOutputArgs(utils.ShallowCopyMap(m), t.schema)
+	coerced = stripUnknownOutputArgs(coerced, t.schema)
 	if err := utils.ValidateMapOnSchema(coerced, t.schema, false); err != nil {
 		if hint := shortOutputSchemaSummary(t.schema); hint != "" {
 			return nil, fmt.Errorf("invalid output schema: %w. %s", err, hint)
