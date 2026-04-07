@@ -18,6 +18,7 @@ package functiontool
 import (
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"runtime/debug"
 
@@ -193,6 +194,7 @@ func (f *functionTool[TArgs, TResults]) Run(ctx tool.Context, args any) (result 
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type, got: %T", args)
 	}
+	m = sanitizeArgs(f.Name(), m, f.inputSchema)
 	input, err := typeutil.ConvertToWithJSONSchema[map[string]any, TArgs](m, f.inputSchema)
 	if err != nil {
 		return nil, err
@@ -262,6 +264,37 @@ func (f *functionTool[TArgs, TResults]) Run(ctx tool.Context, args any) (result 
 // References
 //  [1] MCP SDK https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk@v0.0.0-20250625213837-ff0d746521c4/mcp#ToolHandler
 //  [2] ADK Python https://github.com/google/adk-python/blob/04de3e197d7a57935488eb7bfa647c7ab62cd9d9/src/google/adk/tools/function_tool.py#L110-L112
+
+// sanitizeArgs modifies args in-place to improve compatibility with weaker LLMs:
+//   - Strips keys not defined in the schema (logs a warning).
+//   - Coerces single-element arrays to scalars when the schema expects a string or number.
+func sanitizeArgs(toolName string, args map[string]any, resolved *jsonschema.Resolved) map[string]any {
+	if resolved == nil {
+		return args
+	}
+	schema := resolved.Schema()
+	if schema == nil || schema.Properties == nil {
+		return args
+	}
+
+	out := make(map[string]any, len(args))
+	for key, val := range args {
+		propSchema, defined := schema.Properties[key]
+		if !defined {
+			log.Printf("WARN | adk-go | tool %q: stripping unknown argument %q", toolName, key)
+			continue
+		}
+
+		if arr, isArr := val.([]any); isArr && len(arr) == 1 {
+			if propSchema != nil && (propSchema.Type == "string" || propSchema.Type == "number" || propSchema.Type == "integer" || propSchema.Type == "boolean") {
+				log.Printf("WARN | adk-go | tool %q: unwrapping single-element array for %q (schema type %q)", toolName, key, propSchema.Type)
+				val = arr[0]
+			}
+		}
+		out[key] = val
+	}
+	return out
+}
 
 func resolvedSchema[T any](override *jsonschema.Schema) (*jsonschema.Resolved, error) {
 	// TODO: check if override schema is compatible with T.
