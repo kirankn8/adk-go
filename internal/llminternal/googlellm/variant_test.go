@@ -14,39 +14,7 @@
 
 package googlellm
 
-import (
-	"testing"
-
-	"google.golang.org/genai"
-
-	"google.golang.org/adk/model"
-)
-
-func TestIsGemini25OrLower(t *testing.T) {
-	testCases := []struct {
-		model string
-		want  bool
-	}{
-		{"gemini-1.5-pro", true},
-		{"gemini-2.0-flash", true},
-		{"gemini-2.5-flash-lite", true},
-		{"gemini-2.0-flash-exp", true},
-		{"gemini-1.0-pro", true},
-		{"projects/p/locations/l/models/gemini-2.0-flash", true},
-		{"models/gemini-1.5-pro", true},
-		{"not-a-gemini-model", false},
-		{"gemini-2", true},
-		{"gemini-3.0", false},
-		{"gemini-3-pro", false},
-	}
-
-	for _, tc := range testCases {
-		got := IsGemini25OrLower(tc.model)
-		if got != tc.want {
-			t.Errorf("IsGemini25OrLower(%q) = %v, want %v", tc.model, got, tc.want)
-		}
-	}
-}
+import "testing"
 
 func TestIsGeminiModel(t *testing.T) {
 	testCases := []struct {
@@ -65,48 +33,3 @@ func TestIsGeminiModel(t *testing.T) {
 		}
 	}
 }
-
-func TestNeedsOutputSchemaProcessor(t *testing.T) {
-	testCases := []struct {
-		name    string
-		model   string
-		variant genai.Backend
-		want    bool
-	}{
-		{"Gemini2.0_Vertex", "gemini-2.0-flash", genai.BackendVertexAI, false},
-		{"Gemini2.0_GeminiAPI", "gemini-2.0-flash", genai.BackendGeminiAPI, true},
-		{"NonGemini_Vertex", "not-a-gemini", genai.BackendVertexAI, false},
-		{"Gemini3.0_GeminiAPI", "gemini-3.0", genai.BackendGeminiAPI, false},
-		{"Gemini3.0_Vertex", "gemini-3.0", genai.BackendVertexAI, false},
-		{"CustomGemini2", "gemini-2.0-hack", genai.BackendUnspecified, false},
-		{"CustomGemini3", "gemini-3.0-hack", genai.BackendUnspecified, false},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := NeedsOutputSchemaProcessor(&mockGoogleLLM{
-				variant: tc.variant,
-				nameVal: tc.model,
-			})
-			if got != tc.want {
-				t.Errorf("NeedsOutputSchemaProcessor(%q) = %v, want %v", tc.model, got, tc.want)
-			}
-		})
-	}
-}
-
-type mockGoogleLLM struct {
-	model.LLM
-	variant genai.Backend
-	nameVal string
-}
-
-func (m *mockGoogleLLM) GetGoogleLLMVariant() genai.Backend {
-	return m.variant
-}
-
-func (m *mockGoogleLLM) Name() string {
-	return m.nameVal
-}
-
-var _ GoogleLLM = (*mockGoogleLLM)(nil)

@@ -91,7 +91,6 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
 		}
 
-		// Verify set_model_response tool is present
 		if _, ok := req.Tools["set_model_response"]; !ok {
 			t.Error("req.Tools['set_model_response'] missing")
 		}
@@ -117,7 +116,7 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			s: &State{
 				Model:        &mockLLM{name: "gemini-2.5-flash"},
 				OutputSchema: schema,
-				Tools:        nil, // No tools -> optimization skips processor
+				Tools:        nil, // schema-only: ResponseSchema on request, no shim
 			},
 		}
 
@@ -162,8 +161,33 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 		}
 	})
 
-	t.Run("NoOpWhenNativeSupportAvailable", func(t *testing.T) {
-		// Native support = Vertex AI + Gemini 2.5+
+	t.Run("InjectsToolForNonGeminiModelName", func(t *testing.T) {
+		baseAgent := utils.Must(agent.New(agent.Config{Name: "AnthropicStyleAgent"}))
+		mockAgent := &mockLLMAgent{
+			Agent: baseAgent,
+			s: &State{
+				Model:        &mockLLM{name: "claude-sonnet-4-20250514"},
+				OutputSchema: schema,
+				Tools:        []tool.Tool{&mockTool{name: "other_tool"}},
+			},
+		}
+
+		req := &model.LLMRequest{}
+		ctx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{
+			Agent: mockAgent,
+		})
+
+		events := outputSchemaRequestProcessor(ctx, req, f)
+		for _, err := range events {
+			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
+		}
+
+		if _, ok := req.Tools["set_model_response"]; !ok {
+			t.Error("req.Tools['set_model_response'] missing for non-Gemini model with tools+schema")
+		}
+	})
+
+	t.Run("InjectsToolForVertexGeminiWithTools", func(t *testing.T) {
 		llm := &mockLLM{
 			name:    "gemini-2.5-flash",
 			variant: func() *genai.Backend { x := genai.BackendVertexAI; return &x }(),
@@ -189,8 +213,8 @@ func TestOutputSchemaRequestProcessor(t *testing.T) {
 			t.Fatalf("outputSchemaRequestProcessor() error = %v", err)
 		}
 
-		if _, ok := req.Tools["set_model_response"]; ok {
-			t.Error("set_model_response tool should NOT be added when native support is available")
+		if _, ok := req.Tools["set_model_response"]; !ok {
+			t.Error("req.Tools['set_model_response'] missing for Vertex Gemini with tools+schema")
 		}
 	})
 }
@@ -347,5 +371,150 @@ func TestSetModelResponseTool(t *testing.T) {
 		if err == nil {
 			t.Error("Expected validation error for missing required field, got nil")
 		}
+		if err != nil && !strings.Contains(err.Error(), "Allowed fields") {
+			t.Errorf("error should include schema summary hint: %v", err)
+		}
 	})
+
+	t.Run("RunStripsUnknownKeys", func(t *testing.T) {
+		invCtx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{})
+		toolCtx := toolinternal.NewToolContext(invCtx, "", nil, nil)
+		input := map[string]any{"count": 1.0, "extra": "nope"}
+		got, err := toolInstance.Run(toolCtx, input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := got["extra"]; ok {
+			t.Error("unknown key 'extra' should have been stripped")
+		}
+		if got["count"] != 1.0 {
+			t.Errorf("count: got %v want 1.0", got["count"])
+		}
+	})
+
+	t.Run("RunCoercesWhyLikeShapes", func(t *testing.T) {
+		whySchema := &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"findings":             {Type: genai.TypeString},
+				"execution_sequence":   {Type: genai.TypeString},
+				"decision_points":      {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+				"why":                  {Type: genai.TypeString},
+				"other_error_patterns": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+			},
+			Required: []string{"findings", "execution_sequence", "decision_points", "why"},
+		}
+		ti := &setModelResponseTool{schema: whySchema}
+		invCtx := icontext.NewInvocationContext(context.Background(), icontext.InvocationContextParams{})
+		toolCtx := toolinternal.NewToolContext(invCtx, "", nil, nil)
+
+		input := map[string]any{
+			"findings":             []any{"obs1", "obs2"},
+			"execution_sequence":   []any{"step A", "step B"},
+			"decision_points":      "C1 → ok",
+			"why":                  "therefore",
+			"other_error_patterns": []any{},
+		}
+		got, err := ti.Run(toolCtx, input)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if _, ok := input["findings"].([]any); !ok {
+			t.Fatal("expected input findings unchanged as []any")
+		}
+		if got["findings"] != "obs1\nobs2" {
+			t.Errorf("findings = %q", got["findings"])
+		}
+		if got["execution_sequence"] != "step A\nstep B" {
+			t.Errorf("execution_sequence = %q", got["execution_sequence"])
+		}
+		if diff := cmp.Diff([]any{"C1 → ok"}, got["decision_points"]); diff != "" {
+			t.Errorf("decision_points (-want +got):\n%s", diff)
+		}
+	})
+}
+
+func TestSetModelResponseHasErrorInEvent(t *testing.T) {
+	ev := session.NewEvent("e1")
+	ev.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Role: "user",
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"error": "invalid output schema"},
+				},
+			}},
+		},
+	}
+	if !setModelResponseHasErrorInEvent(ev) {
+		t.Fatal("expected true for error payload")
+	}
+	ev2 := session.NewEvent("e2")
+	ev2.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"count": 1.0},
+				},
+			}},
+		},
+	}
+	if setModelResponseHasErrorInEvent(ev2) {
+		t.Fatal("expected false for success-shaped payload")
+	}
+}
+
+func TestPrepareSetModelResponseSyntheticFinal_RetriesThenTerminal(t *testing.T) {
+	svc := session.InMemoryService()
+	resp, err := svc.Create(t.Context(), &session.CreateRequest{AppName: "a", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := icontext.NewInvocationContext(t.Context(), icontext.InvocationContextParams{
+		Session: resp.Session,
+	})
+	badEv := session.NewEvent("e1")
+	badEv.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"error": "invalid output schema"},
+				},
+			}},
+		},
+	}
+	for i := 0; i < 3; i++ {
+		emit, err := prepareSetModelResponseSyntheticFinal(inv, badEv)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+		if emit {
+			t.Fatalf("attempt %d: want emit false (LLM retry), got true", i+1)
+		}
+	}
+	emit, err := prepareSetModelResponseSyntheticFinal(inv, badEv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !emit {
+		t.Fatal("4th consecutive failure: want emit true (terminal error event)")
+	}
+	goodEv := session.NewEvent("e2")
+	goodEv.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Parts: []*genai.Part{{
+				FunctionResponse: &genai.FunctionResponse{
+					Name:     "set_model_response",
+					Response: map[string]any{"is_satisfied": true},
+				},
+			}},
+		},
+	}
+	emit, err = prepareSetModelResponseSyntheticFinal(inv, goodEv)
+	if err != nil || !emit {
+		t.Fatalf("after success-shaped response: emit=%v err=%v", emit, err)
+	}
 }
