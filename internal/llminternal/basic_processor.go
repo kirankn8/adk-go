@@ -43,8 +43,7 @@ func basicRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f
 			req.Config = &genai.GenerateContentConfig{}
 		}
 
-		// Set OutputSchema directly if no tools are present or native combo support exists.
-		// Otherwise, OutputSchemaRequestProcessor will be used to provide a tool-based workaround.
+		// Native ResponseSchema only when there are no tools/toolsets (otherwise outputSchemaRequestProcessor adds set_model_response).
 		if state.OutputSchema != nil && !needOutputSchemaProcessor(state) {
 			req.Config.ResponseSchema = state.OutputSchema
 			req.Config.ResponseMIMEType = "application/json"
