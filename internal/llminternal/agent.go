@@ -19,6 +19,7 @@ import (
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
+	"google.golang.org/adk/planner"
 	"google.golang.org/adk/tool"
 )
 
@@ -49,6 +50,9 @@ type State struct {
 	OutputSchema *genai.Schema
 
 	OutputKey string
+
+	// Planner is an optional planning strategy (e.g. PlanReActPlanner, BuiltInPlanner).
+	Planner planner.Planner
 }
 
 type InstructionProvider func(ctx agent.ReadonlyContext) (string, error)
