@@ -26,6 +26,7 @@ import (
 	icontext "google.golang.org/adk/internal/context"
 	"google.golang.org/adk/internal/llminternal"
 	"google.golang.org/adk/model"
+	"google.golang.org/adk/planner"
 	"google.golang.org/adk/session"
 	"google.golang.org/adk/tool"
 )
@@ -90,6 +91,7 @@ func New(cfg Config) (agent.Agent, error) {
 			GlobalInstruction:         cfg.GlobalInstruction,
 			GlobalInstructionProvider: llminternal.InstructionProvider(cfg.GlobalInstructionProvider),
 			OutputKey:                 cfg.OutputKey,
+			Planner:                   cfg.Planner,
 		},
 	}
 
@@ -165,6 +167,11 @@ type Config struct {
 	// For example: use this config to adjust model temperature, configure
 	// safety settings, etc.
 	GenerateContentConfig *genai.GenerateContentConfig
+
+	// Planner selects optional planning behavior aligned with Python ADK planners.
+	// Use planner.NewPlanReActPlanner() for natural-language plan / act tagging, or
+	// planner.NewBuiltInPlanner(...) for model-native thinking.
+	Planner planner.Planner
 
 	// BeforeModelCallbacks will be called in the order they are provided until
 	// there's a callback that returns a non-nil LLMResponse or error. Then
@@ -252,10 +259,7 @@ type Config struct {
 	// TODO(ngeorgy): consider to switch to jsonschema for input and output schema.
 	// The input schema when agent is used as a tool.
 	InputSchema *genai.Schema
-	// The output schema when agent replies.
-	//
-	// NOTE: when this is set, agent can only reply and cannot use any tools,
-	// such as function tools, RAGs, agent transfer, etc.
+	// Desired shape of the agent's reply. With tools or toolsets, the final answer is enforced via set_model_response.
 	OutputSchema *genai.Schema
 
 	// Callbacks are executed in the order they are provided.
