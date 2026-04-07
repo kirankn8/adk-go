@@ -18,11 +18,111 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 
 	"google.golang.org/genai"
 )
+
+// ShallowCopyMap returns a shallow copy of m (new map, same value references).
+func ShallowCopyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// normalizedSchemaType matches matchType: schema.Type may be lower/mixed case from APIs.
+func normalizedSchemaType(t genai.Type) genai.Type {
+	return genai.Type(strings.ToUpper(string(t)))
+}
+
+// CoerceFlexibleOutputArgs normalizes common LLM mistakes before ValidateMapOnSchema:
+//   - schema string + model sent []any / []string → join with newlines
+//   - schema array of strings + model sent one string → split on newlines or wrap as single element
+//
+// It mutates m in place. Unknown or already-valid shapes are left unchanged.
+func CoerceFlexibleOutputArgs(m map[string]any, schema *genai.Schema) map[string]any {
+	if m == nil || schema == nil || schema.Properties == nil {
+		return m
+	}
+	out := ShallowCopyMap(m)
+	for key, propSchema := range schema.Properties {
+		v, ok := out[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch normalizedSchemaType(propSchema.Type) {
+		case genai.TypeString:
+			if _, isStr := v.(string); isStr {
+				continue
+			}
+			if s, ok := joinSliceAsNewlines(v); ok {
+				out[key] = s
+			}
+		case genai.TypeArray:
+			if propSchema.Items == nil || normalizedSchemaType(propSchema.Items.Type) != genai.TypeString {
+				continue
+			}
+			if matchSliceOfStrings(v) {
+				continue
+			}
+			if s, ok := v.(string); ok {
+				out[key] = stringToStringSliceItems(s)
+			}
+		}
+	}
+	return out
+}
+
+func joinSliceAsNewlines(v any) (string, bool) {
+	items, ok := v.([]any)
+	if !ok {
+		return "", false
+	}
+	var b strings.Builder
+	for i, item := range items {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprint(&b, item)
+	}
+	return b.String(), true
+}
+
+func matchSliceOfStrings(v any) bool {
+	items, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		if _, ok := item.(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func stringToStringSliceItems(s string) []any {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []any{}
+	}
+	if strings.Contains(s, "\n") {
+		var items []any
+		for _, line := range strings.Split(s, "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				items = append(items, line)
+			}
+		}
+		return items
+	}
+	return []any{s}
+}
 
 // matchType checks if the value matches the schema type.
 func matchType(value any, schema *genai.Schema, isInput bool) (bool, error) {
@@ -52,15 +152,15 @@ func matchType(value any, schema *genai.Schema, isInput bool) (bool, error) {
 		_, ok := value.(float64)
 		return ok, nil
 	case genai.TypeArray:
-		val := reflect.ValueOf(value)
-		if val.Kind() != reflect.Slice {
+		items, ok := value.([]any)
+		if !ok {
 			return false, nil
 		}
 		if schema.Items == nil {
 			return false, fmt.Errorf("array schema missing items definition")
 		}
-		for i := 0; i < val.Len(); i++ {
-			ok, err := matchType(val.Index(i).Interface(), schema.Items, isInput)
+		for i, item := range items {
+			ok, err := matchType(item, schema.Items, isInput)
 			if err != nil {
 				return false, fmt.Errorf("array item %d: %w", i, err)
 			}
