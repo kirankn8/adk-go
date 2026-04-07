@@ -22,11 +22,6 @@ import (
 	"google.golang.org/adk/session"
 )
 
-func nlPlanningRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
-	// TODO: implement (adk-python src/google/adk/flows/llm_flows/_nl_plnning.py)
-	return func(yield func(*session.Event, error) bool) {}
-}
-
 func codeExecutionRequestProcessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
 	// TODO: implement (adk-python src/google/adk/flows/llm_flows/_code_execution.py)
 	return func(yield func(*session.Event, error) bool) {}
@@ -35,11 +30,6 @@ func codeExecutionRequestProcessor(ctx agent.InvocationContext, req *model.LLMRe
 func authPreprocessor(ctx agent.InvocationContext, req *model.LLMRequest, f *Flow) iter.Seq2[*session.Event, error] {
 	// TODO: implement (adk-python src/google/adk/auth/auth_preprocessor.py)
 	return func(yield func(*session.Event, error) bool) {}
-}
-
-func nlPlanningResponseProcessor(ctx agent.InvocationContext, req *model.LLMRequest, resp *model.LLMResponse) error {
-	// TODO: implement (adk-python src/google/adk/_nl_planning.py)
-	return nil
 }
 
 func codeExecutionResponseProcessor(ctx agent.InvocationContext, req *model.LLMRequest, resp *model.LLMResponse) error {
