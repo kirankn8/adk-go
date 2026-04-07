@@ -17,6 +17,7 @@ package controllers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -39,11 +40,45 @@ func EncodeJSONResponse(i any, status int, w http.ResponseWriter) {
 
 type errorHandler func(http.ResponseWriter, *http.Request) error
 
+// trackingWriter records whether the handler wrote headers or body. Used so that
+// handlers (e.g. SSE) that return an error after the response has started do not
+// trigger a second WriteHeader via http.Error (which logs "superfluous
+// response.WriteHeader" and hides the real error).
+type trackingWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (tw *trackingWriter) WriteHeader(code int) {
+	tw.started = true
+	tw.ResponseWriter.WriteHeader(code)
+}
+
+func (tw *trackingWriter) Write(b []byte) (int, error) {
+	tw.started = true
+	return tw.ResponseWriter.Write(b)
+}
+
+// Unwrap preserves http.ResponseController / deadline behavior on the underlying writer.
+func (tw *trackingWriter) Unwrap() http.ResponseWriter { return tw.ResponseWriter }
+
+func (tw *trackingWriter) Flush() {
+	if f, ok := tw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // NewErrorHandler writes the error code returned from the http handler.
 func NewErrorHandler(fn errorHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		err := fn(w, r)
+		tw := &trackingWriter{ResponseWriter: w}
+		err := fn(tw, r)
 		if err != nil {
+			if tw.started {
+				log.Printf("ERROR | adk | %s %s | handler error after response started (e.g. run_sse partial write): %v",
+					r.Method, r.URL.Path, err)
+				return
+			}
 			if statusErr, ok := err.(statusError); ok {
 				http.Error(w, statusErr.Error(), statusErr.Status())
 			} else {

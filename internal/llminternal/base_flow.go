@@ -203,6 +203,14 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 				continue
 			}
 
+			// Yield the tool function-response event before the synthetic model event for
+			// adk_request_confirmation. OpenAI (and other chat APIs) require every assistant
+			// message with tool_calls to be followed immediately by tool role messages for
+			// those calls; inserting another assistant turn in between breaks the transcript.
+			if !yield(ev, nil) {
+				return
+			}
+
 			toolConfirmationEvent := generateRequestConfirmationEvent(ctx, modelResponseEvent, ev)
 			if toolConfirmationEvent != nil {
 				if !yield(toolConfirmationEvent, nil) {
@@ -210,19 +218,22 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 				}
 			}
 
-			if !yield(ev, nil) {
-				return
-			}
-
-			// If the model response is structured, yield it as a final model response event.
+			// set_model_response: emit a synthetic model message carrying the JSON payload.
 			outputSchemaResponse, err := retrieveStructuredModelResponse(ev)
 			if err != nil {
 				yield(nil, err)
 				return
 			}
 			if outputSchemaResponse != "" {
-				if !yield(createFinalModelResponseEvent(ctx, outputSchemaResponse), nil) {
+				emitFinal, prepErr := prepareSetModelResponseSyntheticFinal(ctx, ev)
+				if prepErr != nil {
+					yield(nil, prepErr)
 					return
+				}
+				if emitFinal {
+					if !yield(createFinalModelResponseEvent(ctx, outputSchemaResponse), nil) {
+						return
+					}
 				}
 			}
 			// Actually handle "transfer_to_agent" tool. The function call sets the ev.Actions.TransferToAgent field.
