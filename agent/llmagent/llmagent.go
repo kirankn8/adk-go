@@ -111,6 +111,7 @@ func New(cfg Config) (agent.Agent, error) {
 	a.Agent = baseAgent
 	a.AgentType = agentinternal.TypeLLMAgent
 	a.Config = cfg
+	a.architecture = cfg.Architecture
 
 	// TODO: temporary hack to set the LLMAgent type field correctly. Currently, beforeAgentCallback for LLMAgent only
 	// sees basic *agent.agent type: http://google3/third_party/golang/adk/agent/agent.go;l=177-201;rcl=869633263
@@ -172,6 +173,11 @@ type Config struct {
 	// Use planner.NewPlanReActPlanner() for natural-language plan / act tagging, or
 	// planner.NewBuiltInPlanner(...) for model-native thinking.
 	Planner planner.Planner
+
+	// Architecture replaces the default ReAct loop when non-nil.
+	// Use knloop.New() to enable the knloop hypothesis-driven investigation
+	// architecture. When nil (default) the agent runs the standard ReAct loop.
+	Architecture Architecture
 
 	// BeforeModelCallbacks will be called in the order they are provided until
 	// there's a callback that returns a non-nil LLMResponse or error. Then
@@ -358,11 +364,24 @@ type llmAgent struct {
 
 	inputSchema  *genai.Schema
 	outputSchema *genai.Schema
+
+	architecture Architecture
 }
 
 type agentState = agentinternal.State
 
 func (a *llmAgent) run(ctx agent.InvocationContext) iter.Seq2[*session.Event, error] {
+	if a.architecture != nil {
+		base := BaseAgentConfig{
+			Model:       a.model,
+			Tools:       a.Tools,
+			Toolsets:    a.Toolsets,
+			Instruction: a.Instruction,
+			Planner:     a.Planner,
+		}
+		return a.architecture.Run(ctx, base)
+	}
+
 	// TODO: branch context?
 	ctx = icontext.NewInvocationContext(ctx, icontext.InvocationContextParams{
 		Artifacts:    ctx.Artifacts(),
