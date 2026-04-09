@@ -15,6 +15,14 @@ Instructions:
    - Directly answers the task question by printing relevant output.
    - Uses real commands: systemctl, journalctl, kubectl, crictl, cat, grep, etc.
    - Self-contained and runnable on the cluster.
+   - CRITICAL: The script MUST always print something to stdout. Every command
+     that might produce no output MUST have a fallback echo:
+       systemctl is-active kubelet 2>/dev/null || echo "kubelet: not found"
+       kubectl get nodes 2>&1 || echo "kubectl failed"
+       journalctl -u myservice -n 5 --no-pager 2>&1 || echo "no journal entries"
+     A script that exits 0 with empty stdout is treated as a failure and retried.
+   - If a service/file/process does not exist, print that fact — absence of a
+     component IS evidence.
    - If there was a previous failure above, fix the specific issue described.
 4. Output the script using set_model_response with a "script" field.
 5. Once you write the script, stop — the harness runs it and captures the output.

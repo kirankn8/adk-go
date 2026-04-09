@@ -96,7 +96,7 @@ func runTask(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, t Task,
 		// Run the script and capture evidence.
 		stdout, ok := executeScript(script, cfg.TestTimeout)
 		if !ok {
-			failMsg := fmt.Sprintf("Script failed (non-zero exit or empty stdout).\nScript:\n%s\nOutput:\n%s", script, stdout)
+			failMsg := fmt.Sprintf("Script failed (non-zero exit or timeout).\nScript:\n%s\nOutput:\n%s", script, stdout)
 			if !emitText(fmt.Sprintf("    ↻ script failed (attempt %d/%d)\n", i+1, cfg.MaxIterationsPerTask), yield) {
 				return t, false
 			}
@@ -128,8 +128,9 @@ func extractEvidScript(jsonStr string) (string, error) {
 }
 
 // executeScript runs script as "bash -c <script>" with the given timeout.
-// It returns (trimmed stdout, true) on success (exit 0 + non-empty output).
-// It returns (partial stdout, false) on non-zero exit, timeout, or empty output.
+// It returns (trimmed stdout, true) on success (exit 0).
+// It returns (partial stdout, false) on non-zero exit or timeout.
+// Empty stdout on exit 0 is accepted — the caller checks if evidence is useful.
 func executeScript(script string, timeout time.Duration) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -145,5 +146,5 @@ func executeScript(script string, timeout time.Duration) (string, bool) {
 	if err != nil || ctx.Err() != nil {
 		return out, false
 	}
-	return out, out != ""
+	return out, true
 }
