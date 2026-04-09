@@ -31,10 +31,15 @@ import (
 //
 // Returns false if the consumer stopped early.
 func runSynthesis(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, plan Plan, yield func(*session.Event, error) bool) bool {
-	// Build combined evidence block.
+	// Build combined evidence block from all stages and their tasks.
 	var sb strings.Builder
-	for i, t := range plan.Tasks {
-		sb.WriteString(fmt.Sprintf("--- Task %d ---\nQuestion: %s\nEvidence:\n%s\n\n", i+1, t.Question, t.Evidence))
+	taskNum := 0
+	for si, stage := range plan.Stages {
+		for _, t := range stage {
+			taskNum++
+			sb.WriteString(fmt.Sprintf("--- Stage %d / Task %d ---\nQuestion: %s\nEvidence:\n%s\n\n",
+				si+1, taskNum, t.Question, t.Evidence))
+		}
 	}
 	stateSet(ctx, stateAllEvidence, sb.String())
 

@@ -17,7 +17,6 @@ package knloop
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -110,18 +109,6 @@ func runTask(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, t Task,
 	return t, true
 }
 
-// extractScript unpacks the "script" string from the JSON saved by OutputKey.
-func extractScript(jsonStr string) (string, error) {
-	if strings.TrimSpace(jsonStr) == "" {
-		return "", fmt.Errorf("empty JSON")
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-		return "", fmt.Errorf("unmarshal: %w", err)
-	}
-	s, _ := m["script"].(string)
-	return s, nil
-}
 
 // executeScript runs script as "bash -c <script>" with the given timeout.
 // It returns (trimmed stdout, true) on success (exit 0 + non-empty output).
