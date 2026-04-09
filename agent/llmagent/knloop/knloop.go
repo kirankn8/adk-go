@@ -20,13 +20,16 @@
 //
 //  1. Skill Resolution — the LLM surveys available tools and skills to build
 //     an understanding of what can be observed in the environment.
-//  2. Planning (ralph loop) — the LLM generates up to 100 small, focused
-//     discovery tasks about the environment. A deterministic validator
-//     retries the loop until the plan is valid or max iterations are reached.
+//  2. Workflow Generation (ralph loop) — the LLM writes a bash workflow script
+//     that encodes which tasks are parallel (same blank-line group) and which
+//     are sequential (different groups). A deterministic validator retries
+//     until the script passes or max iterations are reached.
 //  3. Per-task Investigation (ralph loop of ReAct loop) — for each task, an
 //     inner ReAct loop explores freely and writes a bash evidence script.
 //     The harness runs the script; if it succeeds, the stdout is captured as
 //     evidence. On failure the script is rejected and the inner loop retries.
+//     Tasks within a stage run sequentially for now; goroutine parallelism
+//     within a stage is a planned follow-up.
 //  4. Synthesis — a single LLM call reads all task evidence and produces a
 //     root-cause report that is streamed back to the user.
 package knloop
@@ -34,7 +37,6 @@ package knloop
 import (
 	"encoding/json"
 	"iter"
-	"strings"
 	"time"
 
 	"google.golang.org/adk/agent"
@@ -45,12 +47,13 @@ import (
 // Session state keys used to pass data between knloop steps.
 // All keys are prefixed with "knloop_" to avoid collisions.
 const (
-	stateSkillContext  = "knloop_skill_context"
-	statePlanFailures  = "knloop_plan_failures"
-	stateCurrentTask   = "knloop_current_task"
-	stateEvidScript    = "knloop_evidence_script"
-	stateScriptFailure = "knloop_script_failure"
-	stateAllEvidence   = "knloop_all_evidence"
+	stateSkillContext    = "knloop_skill_context"
+	statePlanFailures    = "knloop_plan_failures"
+	stateNavigatorScript = "knloop_navigator_script"
+	stateCurrentTask     = "knloop_current_task"
+	stateEvidScript      = "knloop_evidence_script"
+	stateScriptFailure   = "knloop_script_failure"
+	stateAllEvidence     = "knloop_all_evidence"
 )
 
 // Config holds tuning parameters for the knloop investigation architecture.
@@ -76,6 +79,10 @@ type Config struct {
 	// retained for future use limiting the inner investigator ReAct loop.
 	MaxReActIterationsPerTask int
 
+	// ScriptTimeout is the maximum duration allowed for executing the workflow
+	// script (which just echoes strings, so a short timeout is sufficient).
+	ScriptTimeout time.Duration
+
 	// TestTimeout is the maximum duration allowed for each evidence script
 	// execution.
 	TestTimeout time.Duration
@@ -89,6 +96,7 @@ func New() *Config {
 		MinPlanTasks:              10,
 		MaxIterationsPerTask:      5,
 		MaxReActIterationsPerTask: 8,
+		ScriptTimeout:             5 * time.Second,
 		TestTimeout:               30 * time.Second,
 	}
 }
@@ -121,12 +129,16 @@ func (c *Config) Run(ctx agent.InvocationContext, base llmagent.BaseAgentConfig)
 		}
 
 		// Step 3: Per-task ralph(ReAct) investigation.
-		for i := range plan.Tasks {
-			t, ok := runTask(ctx, base, plan.Tasks[i], c, yield)
-			if !ok {
-				return
+		// Stages run sequentially; tasks within a stage also run sequentially
+		// for now (goroutine parallelism within a stage is a planned follow-up).
+		for si := range plan.Stages {
+			for ti := range plan.Stages[si] {
+				t, ok := runTask(ctx, base, plan.Stages[si][ti], c, yield)
+				if !ok {
+					return
+				}
+				plan.Stages[si][ti] = t
 			}
-			plan.Tasks[i] = t
 		}
 
 		// Step 4: Synthesis.
@@ -143,26 +155,6 @@ func drain(ag agent.Agent, ctx agent.InvocationContext, yield func(*session.Even
 		}
 	}
 	return true
-}
-
-// drainCapture runs ag, forwards every event through yield, and also
-// collects the plain-text content from all final (non-partial) events.
-// Returns (accumulated text, false) if the consumer stopped early.
-func drainCapture(ag agent.Agent, ctx agent.InvocationContext, yield func(*session.Event, error) bool) (string, bool) {
-	var sb strings.Builder
-	for ev, err := range ag.Run(ctx) {
-		if !yield(ev, err) {
-			return sb.String(), false
-		}
-		if ev != nil && ev.Content != nil && !ev.Partial {
-			for _, part := range ev.Content.Parts {
-				if part.Text != "" {
-					sb.WriteString(part.Text)
-				}
-			}
-		}
-	}
-	return sb.String(), true
 }
 
 // stateGetString reads a session-state value as a string.
