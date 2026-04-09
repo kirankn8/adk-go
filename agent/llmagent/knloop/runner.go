@@ -17,6 +17,7 @@ package knloop
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -83,7 +84,7 @@ func runTask(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, t Task,
 
 		// Extract the bash script from state.
 		scriptJSON := stateGetString(ctx, stateEvidScript)
-		script, extractErr := extractScript(scriptJSON)
+		script, extractErr := extractEvidScript(scriptJSON)
 		if extractErr != nil || strings.TrimSpace(script) == "" {
 			stateSet(ctx, stateScriptFailure,
 				"No script was produced or the 'script' field was empty. "+
@@ -111,6 +112,19 @@ func runTask(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, t Task,
 	return t, true
 }
 
+
+// extractEvidScript unpacks the "script" field from the investigator's OutputKey JSON.
+func extractEvidScript(jsonStr string) (string, error) {
+	if strings.TrimSpace(jsonStr) == "" {
+		return "", fmt.Errorf("empty")
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
+		return "", fmt.Errorf("unmarshal: %w", err)
+	}
+	s, _ := m["script"].(string)
+	return s, nil
+}
 
 // executeScript runs script as "bash -c <script>" with the given timeout.
 // It returns (trimmed stdout, true) on success (exit 0 + non-empty output).

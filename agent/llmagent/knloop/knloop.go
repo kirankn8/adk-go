@@ -51,13 +51,12 @@ import (
 // Session state keys used to pass data between knloop steps.
 // All keys are prefixed with "knloop_" to avoid collisions.
 const (
-	stateSkillContext    = "knloop_skill_context"
-	statePlanFailures    = "knloop_plan_failures"
-	stateNavigatorScript = "knloop_navigator_script"
-	stateCurrentTask     = "knloop_current_task"
-	stateEvidScript      = "knloop_evidence_script"
-	stateScriptFailure   = "knloop_script_failure"
-	stateAllEvidence     = "knloop_all_evidence"
+	stateSkillContext  = "knloop_skill_context"
+	statePlanFailures  = "knloop_plan_failures"
+	stateCurrentTask   = "knloop_current_task"
+	stateEvidScript    = "knloop_evidence_script"
+	stateScriptFailure = "knloop_script_failure"
+	stateAllEvidence   = "knloop_all_evidence"
 )
 
 // Config holds tuning parameters for the knloop investigation architecture.
@@ -216,6 +215,26 @@ func emitPlanOverview(plan Plan, yield func(*session.Event, error) bool) bool {
 		}
 	}
 	return emitText(sb.String(), yield)
+}
+
+// drainCapture runs ag, forwards every event through yield, and collects the
+// plain-text content from all final (non-partial) events.
+// Returns (accumulated text, false) if the consumer stopped early.
+func drainCapture(ag agent.Agent, ctx agent.InvocationContext, yield func(*session.Event, error) bool) (string, bool) {
+	var sb strings.Builder
+	for ev, err := range ag.Run(ctx) {
+		if !yield(ev, err) {
+			return sb.String(), false
+		}
+		if ev != nil && ev.Content != nil && !ev.Partial {
+			for _, part := range ev.Content.Parts {
+				if part.Text != "" {
+					sb.WriteString(part.Text)
+				}
+			}
+		}
+	}
+	return sb.String(), true
 }
 
 // drain runs ag and forwards every event through yield.

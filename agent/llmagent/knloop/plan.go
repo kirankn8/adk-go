@@ -15,16 +15,8 @@
 package knloop
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
-	"time"
-
-	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -33,8 +25,8 @@ import (
 
 // Task is a single discovery question with its collected evidence.
 type Task struct {
-	Question string `json:"question"`
-	Evidence string `json:"evidence,omitempty"`
+	Question string
+	Evidence string
 }
 
 // Plan holds the staged workflow produced by the planner.
@@ -43,29 +35,12 @@ type Plan struct {
 	Stages [][]Task
 }
 
-// workflowSchema is the output schema for the planner agent.
-// The planner calls set_model_response({"script": "..."}) when done.
-var workflowSchema = &genai.Schema{
-	Type: genai.TypeObject,
-	Properties: map[string]*genai.Schema{
-		"script": {
-			Type: genai.TypeString,
-			Description: "Bash script that echoes task questions. " +
-				"Blank lines between echo groups define parallel stages.",
-		},
-	},
-	Required: []string{"script"},
-}
-
 // generatePlan runs the workflow-generation ralph loop (Step 2).
 //
-// Each iteration: planner LLM writes a bash workflow script →
-// static validation (syntax + safety) → execute script → parse stages →
-// task-level validation. On any failure the error is injected into
-// statePlanFailures and the LLM retries up to cfg.MaxPlanIterations times.
-//
-// Returns (plan, true) on success or when max iterations are exceeded.
-// Returns (Plan{}, false) only if the consumer (yield) stopped early.
+// The planner LLM outputs plain text: task questions separated by newlines,
+// with blank lines between parallel stages. The harness captures the text,
+// parses it into stages, and validates it. On failure the error is injected
+// into statePlanFailures and the LLM retries up to cfg.MaxPlanIterations times.
 func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cfg *Config, yield func(*session.Event, error) bool) (Plan, bool) {
 	for i := 0; i < cfg.MaxPlanIterations; i++ {
 		if i > 0 {
@@ -73,14 +48,13 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 				return Plan{}, false
 			}
 		}
+
 		ag, err := llmagent.New(llmagent.Config{
 			Name:                     "knloop_planner",
 			Model:                    base.Model,
 			Tools:                    base.Tools,
 			Toolsets:                 base.Toolsets,
 			Instruction:              plannerPrompt,
-			OutputSchema:             workflowSchema,
-			OutputKey:                stateNavigatorScript,
 			IncludeContents:          llmagent.IncludeContentsNone,
 			DisallowTransferToParent: true,
 			DisallowTransferToPeers:  true,
@@ -90,44 +64,13 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 			return Plan{}, false
 		}
 
-		if !drain(ag, ctx, yield) {
+		text, ok := drainCapture(ag, ctx, yield)
+		if !ok {
 			return Plan{}, false
 		}
 
-		// Extract the script from state (written by the planner via OutputKey).
-		scriptJSON := stateGetString(ctx, stateNavigatorScript)
-		script, err := extractScript(scriptJSON)
-		if err != nil {
-			stateSet(ctx, statePlanFailures,
-				"Could not extract script: "+err.Error()+
-					`. Call set_model_response({"script": "..."}) with the complete bash script.`)
-			continue
-		}
+		plan := parseWorkflow(text)
 
-		// Static script validation (no execution yet).
-		if scriptFailures := validateScript(script); len(scriptFailures) > 0 {
-			msg := strings.Join(scriptFailures, "; ")
-			if !emitText("  ✗ script invalid: "+msg+"\n", yield) {
-				return Plan{}, false
-			}
-			stateSet(ctx, statePlanFailures, strings.Join(scriptFailures, "\n"))
-			continue
-		}
-
-		// Execute the script to get the workflow definition.
-		stdout, execErr := executeWorkflowScript(script, cfg.ScriptTimeout)
-		if execErr != nil {
-			if !emitText("  ✗ script execution failed: "+execErr.Error()+"\n", yield) {
-				return Plan{}, false
-			}
-			stateSet(ctx, statePlanFailures, "Script execution failed: "+execErr.Error()+
-				". Ensure the script only uses echo and exits 0.")
-			continue
-		}
-
-		plan := parseWorkflow(stdout)
-
-		// Task-level validation.
 		skillCtx := stateGetString(ctx, stateSkillContext)
 		if failures := validateTasks(plan, skillCtx, cfg.MinPlanTasks); len(failures) > 0 {
 			msg := strings.Join(failures, "; ")
@@ -142,106 +85,18 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 		return plan, true
 	}
 
-	// Max iterations reached — return empty plan; synthesis runs with no evidence.
 	stateSet(ctx, statePlanFailures, "")
 	return Plan{}, true
 }
 
-// extractScript unpacks {"script":"..."} from the planner's OutputKey state value.
-func extractScript(jsonStr string) (string, error) {
-	if strings.TrimSpace(jsonStr) == "" {
-		return "", fmt.Errorf("empty output")
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &m); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
-	}
-	s, ok := m["script"].(string)
-	if !ok || strings.TrimSpace(s) == "" {
-		return "", fmt.Errorf("missing or empty \"script\" field")
-	}
-	return s, nil
-}
-
-// validateScript runs static checks on the bash script before execution.
-func validateScript(script string) []string {
-	var failures []string
-	if err := checkBashSyntax(script); err != nil {
-		failures = append(failures, "bash syntax error: "+err.Error())
-	}
-	if cmds := findDestructiveCommands(script); len(cmds) > 0 {
-		failures = append(failures,
-			"script contains destructive commands ("+strings.Join(cmds, ", ")+
-				"); the workflow script must only use echo and comments")
-	}
-	return failures
-}
-
-// checkBashSyntax validates the script using "bash -n" (parse-only, no execution).
-func checkBashSyntax(script string) error {
-	f, err := os.CreateTemp("", "knloop_plan_*.sh")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.WriteString(script); err != nil {
-		f.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	f.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-n", f.Name())
-	var errBuf bytes.Buffer
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s", strings.TrimSpace(errBuf.String()))
-	}
-	return nil
-}
-
-// destructivePatterns lists command patterns that must not appear in the workflow script.
-var destructivePatterns = []string{
-	"rm -rf", "rm -r", "mkfs", "dd ", ":(){ :|:& };",
-	"> /dev/", "shred ", "wipefs", "fdisk", "parted ",
-}
-
-// findDestructiveCommands returns any destructive patterns found in the script.
-func findDestructiveCommands(script string) []string {
-	lower := strings.ToLower(script)
-	var found []string
-	for _, p := range destructivePatterns {
-		if strings.Contains(lower, p) {
-			found = append(found, p)
-		}
-	}
-	return found
-}
-
-// executeWorkflowScript runs the workflow script with no arguments and returns stdout.
-// The script is expected to only echo task questions and exit 0.
-func executeWorkflowScript(script string, timeout time.Duration) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", script)
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("exit error: %w\nstderr: %s", err, strings.TrimSpace(errBuf.String()))
-	}
-	return out.String(), nil
-}
-
-// parseWorkflow converts the workflow script's stdout into a Plan.
+// parseWorkflow parses the planner's plain-text output into a Plan.
 //
-// Blank lines separate parallel stages. Lines beginning with "#" are ignored.
-// Tasks within a stage can run in parallel (goroutine parallelism is a follow-up);
-// stages themselves run in order.
-func parseWorkflow(stdout string) Plan {
+// Blank lines (\n\n) separate parallel stages.
+// Lines within a stage are individual task questions.
+// Lines beginning with "#" are ignored (comments).
+func parseWorkflow(text string) Plan {
 	var stages [][]Task
-	for _, chunk := range strings.Split(stdout, "\n\n") {
+	for _, chunk := range strings.Split(text, "\n\n") {
 		var tasks []Task
 		for _, line := range strings.Split(chunk, "\n") {
 			line = strings.TrimSpace(line)
@@ -258,7 +113,7 @@ func parseWorkflow(stdout string) Plan {
 }
 
 // validateTasks runs deterministic checks on all tasks across all stages.
-// It returns a list of failure descriptions; empty means the plan is valid.
+// Returns a list of failure descriptions; empty means the plan is valid.
 func validateTasks(plan Plan, skillContext string, minTasks int) []string {
 	var failures []string
 
