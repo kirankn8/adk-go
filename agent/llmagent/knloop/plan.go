@@ -68,6 +68,11 @@ var workflowSchema = &genai.Schema{
 // Returns (Plan{}, false) only if the consumer (yield) stopped early.
 func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cfg *Config, yield func(*session.Event, error) bool) (Plan, bool) {
 	for i := 0; i < cfg.MaxPlanIterations; i++ {
+		if i > 0 {
+			if !emitText(fmt.Sprintf("  ↻ plan attempt %d/%d\n", i+1, cfg.MaxPlanIterations), yield) {
+				return Plan{}, false
+			}
+		}
 		ag, err := llmagent.New(llmagent.Config{
 			Name:                     "knloop_planner",
 			Model:                    base.Model,
@@ -101,6 +106,10 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 
 		// Static script validation (no execution yet).
 		if scriptFailures := validateScript(script); len(scriptFailures) > 0 {
+			msg := strings.Join(scriptFailures, "; ")
+			if !emitText("  ✗ script invalid: "+msg+"\n", yield) {
+				return Plan{}, false
+			}
 			stateSet(ctx, statePlanFailures, strings.Join(scriptFailures, "\n"))
 			continue
 		}
@@ -108,6 +117,9 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 		// Execute the script to get the workflow definition.
 		stdout, execErr := executeWorkflowScript(script, cfg.ScriptTimeout)
 		if execErr != nil {
+			if !emitText("  ✗ script execution failed: "+execErr.Error()+"\n", yield) {
+				return Plan{}, false
+			}
 			stateSet(ctx, statePlanFailures, "Script execution failed: "+execErr.Error()+
 				". Ensure the script only uses echo and exits 0.")
 			continue
@@ -118,6 +130,10 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 		// Task-level validation.
 		skillCtx := stateGetString(ctx, stateSkillContext)
 		if failures := validateTasks(plan, skillCtx, cfg.MinPlanTasks); len(failures) > 0 {
+			msg := strings.Join(failures, "; ")
+			if !emitText("  ✗ plan invalid: "+msg+"\n", yield) {
+				return Plan{}, false
+			}
 			stateSet(ctx, statePlanFailures, strings.Join(failures, "\n"))
 			continue
 		}

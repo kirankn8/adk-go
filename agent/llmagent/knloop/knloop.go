@@ -36,8 +36,12 @@ package knloop
 
 import (
 	"encoding/json"
+	"fmt"
 	"iter"
+	"strings"
 	"time"
+
+	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -118,32 +122,100 @@ func ConfigForHost(host string) *Config {
 func (c *Config) Run(ctx agent.InvocationContext, base llmagent.BaseAgentConfig) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		// Step 1: Skill Resolution.
+		if !emitText("▶ knloop [1/4] skill resolution\n", yield) {
+			return
+		}
 		if ok := runResolution(ctx, base, yield); !ok {
 			return
 		}
 
-		// Step 2: Planning ralph loop.
+		// Step 2: Workflow planning ralph loop.
+		if !emitText("\n▶ knloop [2/4] workflow planning\n", yield) {
+			return
+		}
 		plan, ok := generatePlan(ctx, base, c, yield)
 		if !ok {
+			return
+		}
+		if !emitPlanOverview(plan, yield) {
 			return
 		}
 
 		// Step 3: Per-task ralph(ReAct) investigation.
 		// Stages run sequentially; tasks within a stage also run sequentially
 		// for now (goroutine parallelism within a stage is a planned follow-up).
+		total := 0
+		for _, s := range plan.Stages {
+			total += len(s)
+		}
+		if !emitText(fmt.Sprintf("\n▶ knloop [3/4] investigation — %d stage(s), %d task(s)\n", len(plan.Stages), total), yield) {
+			return
+		}
 		for si := range plan.Stages {
+			stageLen := len(plan.Stages[si])
+			if !emitText(fmt.Sprintf("\n  ┌ stage %d/%d  (%d task(s))\n", si+1, len(plan.Stages), stageLen), yield) {
+				return
+			}
 			for ti := range plan.Stages[si] {
-				t, ok := runTask(ctx, base, plan.Stages[si][ti], c, yield)
+				task := plan.Stages[si][ti]
+				if !emitText(fmt.Sprintf("  │ [%d/%d] %s\n", ti+1, stageLen, task.Question), yield) {
+					return
+				}
+				t, ok := runTask(ctx, base, task, c, yield)
 				if !ok {
 					return
 				}
 				plan.Stages[si][ti] = t
+				if t.Evidence != "" {
+					if !emitText(fmt.Sprintf("  │ evidence:\n%s\n", t.Evidence), yield) {
+						return
+					}
+				} else {
+					if !emitText("  │ evidence: (none captured)\n", yield) {
+						return
+					}
+				}
 			}
 		}
 
 		// Step 4: Synthesis.
+		if !emitText("\n▶ knloop [4/4] synthesis\n\n", yield) {
+			return
+		}
 		runSynthesis(ctx, base, plan, yield)
 	}
+}
+
+// emitText yields a synthetic plain-text progress event to the client stream.
+func emitText(text string, yield func(*session.Event, error) bool) bool {
+	ev := &session.Event{}
+	ev.Content = &genai.Content{
+		Role:  "model",
+		Parts: []*genai.Part{{Text: text}},
+	}
+	return yield(ev, nil)
+}
+
+// emitPlanOverview yields a formatted summary of the generated workflow plan.
+func emitPlanOverview(plan Plan, yield func(*session.Event, error) bool) bool {
+	if len(plan.Stages) == 0 {
+		return emitText("  (planner produced no tasks)\n", yield)
+	}
+	var sb strings.Builder
+	total := 0
+	for _, s := range plan.Stages {
+		total += len(s)
+	}
+	sb.WriteString(fmt.Sprintf("  plan: %d stage(s), %d task(s) total\n", len(plan.Stages), total))
+	n := 0
+	for si, stage := range plan.Stages {
+		sb.WriteString(fmt.Sprintf("  stage %d (%d task(s), parallel):\n", si+1, len(stage)))
+		for _, t := range stage {
+			n++
+			sb.WriteString(fmt.Sprintf("    %d. %s\n", n, t.Question))
+		}
+	}
+	return emitText(sb.String(), yield)
 }
 
 // drain runs ag and forwards every event through yield.

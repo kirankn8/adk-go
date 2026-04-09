@@ -94,9 +94,11 @@ func runTask(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, t Task,
 		// Run the script and capture evidence.
 		stdout, ok := executeScript(script, cfg.TestTimeout)
 		if !ok {
-			stateSet(ctx, stateScriptFailure, fmt.Sprintf(
-				"Script failed (non-zero exit or empty stdout). Fix the script and try again.\n"+
-					"Script:\n%s\n\nOutput so far:\n%s", script, stdout))
+			failMsg := fmt.Sprintf("Script failed (non-zero exit or empty stdout).\nScript:\n%s\nOutput:\n%s", script, stdout)
+			if !emitText(fmt.Sprintf("    ↻ script failed (attempt %d/%d)\n", i+1, cfg.MaxIterationsPerTask), yield) {
+				return t, false
+			}
+			stateSet(ctx, stateScriptFailure, "Fix the script and try again.\n"+failMsg)
 			continue
 		}
 
