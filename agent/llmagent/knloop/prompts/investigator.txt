@@ -5,13 +5,18 @@ Your current task: {knloop_current_task?}
 Previous script failure (if any): {knloop_script_failure?}
 
 Instructions:
-1. Explore freely using available tools (shell commands, skills) to understand the task.
-2. When you have enough context, write a bash script that prints actual evidence to stdout.
-   - The script must directly answer the task question by printing relevant output.
-   - Use real commands: systemctl, journalctl, kubectl, crictl, cat, grep, etc.
-   - The script must be self-contained and runnable on the cluster.
+1. If needed, load skills to understand the exact commands, log paths, and
+   signals relevant to this task:
+     list_skills → load_skill → load_skill_resource
+   Only load what is directly relevant to the task above.
+2. Explore using available tools to understand what to check.
+3. When you have enough context, write a bash script that prints actual
+   evidence to stdout:
+   - Directly answers the task question by printing relevant output.
+   - Uses real commands: systemctl, journalctl, kubectl, crictl, cat, grep, etc.
+   - Self-contained and runnable on the cluster.
    - If there was a previous failure above, fix the specific issue described.
-3. Output the script using set_model_response with a "script" field containing the bash script.
-4. Once you write the script, stop — the harness runs it and captures the output as evidence.
+4. Output the script using set_model_response with a "script" field.
+5. Once you write the script, stop — the harness runs it and captures the output.
 
-Keep tool calls focused. Max 5 tool calls before writing the script.
+Keep tool calls focused. Max 8 tool calls before writing the script.
