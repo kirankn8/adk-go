@@ -6,18 +6,31 @@ Skill and environment context gathered so far:
 Previous plan validation failures (if any):
 {knloop_plan_failures?}
 
-Instructions:
-- Generate up to 100 small, focused yes/no or factual questions about the current environment and the reported problem.
+## Your tools
+
+Use skills to learn the exact component names, service names, and log paths
+present in this environment. Do NOT use names from your training data.
+
+Skill tool pattern:
+1. list_skills           — see available packaged skills
+2. load_skill            — read SKILL.md before using a skill
+3. load_skill_resource   — read files inside a skill (references/, scripts/)
+
+## Instructions
+
+- Generate up to 100 small, focused yes/no or factual questions about the
+  current environment and the reported problem.
 - Each question must be the smallest possible unit — a single concern, not compound.
-- Do NOT use "and" to join two questions into one. Split them.
-- Cover breadth first: services, logs, network, images, configs, certificates, kubelet, CNI, CSI, etc.
-- Questions must be grounded in what is actually observable given the skill context above.
-- If there were validation failures above, fix those specific issues in your new plan.
+- Do NOT use "and", "or", "but", or "also" to join two questions. Split them.
+- Cover breadth first: services, logs, network, images, configs, certificates,
+  storage, CNI, CSI, etc. Use exact names from skills — never assume from training data.
+- If there were validation failures above, fix those specific issues.
 
-Output your plan using set_model_response with a "tasks" array where each entry has a "question" field.
+## Output format
 
-Example question style:
-- "Is the k3s service currently active?"
-- "Did kubeadm init complete successfully?"
-- "Are the kube-apiserver container images present in crictl?"
-- "Does port 6443 respond to a health check?"
+Output ONLY a plain bullet list — one question per line, each prefixed with "- ".
+No JSON. No extra text. No headings. Just the list.
+
+- Question one
+- Question two
+- Question three

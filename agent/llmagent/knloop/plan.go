@@ -15,11 +15,9 @@
 package knloop
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
-
-	"google.golang.org/genai"
+	"unicode"
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -37,29 +35,6 @@ type Plan struct {
 	Tasks []Task `json:"tasks"`
 }
 
-// plannerSchema defines the structured output for the planning step.
-// The planner has no other tools, so ADK uses native JSON response mode.
-var plannerSchema = &genai.Schema{
-	Type: genai.TypeObject,
-	Properties: map[string]*genai.Schema{
-		"tasks": {
-			Type:        genai.TypeArray,
-			Description: "List of small, focused discovery tasks.",
-			Items: &genai.Schema{
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"question": {
-						Type:        genai.TypeString,
-						Description: "A single, focused yes/no or factual question about the environment.",
-					},
-				},
-				Required: []string{"question"},
-			},
-		},
-	},
-	Required: []string{"tasks"},
-}
-
 // generatePlan runs the planning ralph loop (Step 2).
 //
 // It calls the planner LLM up to cfg.MaxPlanIterations times. After each
@@ -71,32 +46,26 @@ var plannerSchema = &genai.Schema{
 func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cfg *Config, yield func(*session.Event, error) bool) (Plan, bool) {
 	for i := 0; i < cfg.MaxPlanIterations; i++ {
 		ag, err := llmagent.New(llmagent.Config{
-			Name:        "knloop_planner",
-			Model:       base.Model,
-			Instruction: plannerPrompt,
-			OutputSchema: plannerSchema,
-			OutputKey:   statePlan,
-			// No tools: planner only reads state and generates a plan.
-			IncludeContents:         llmagent.IncludeContentsNone,
+			Name:                     "knloop_planner",
+			Model:                    base.Model,
+			Tools:                    base.Tools,
+			Toolsets:                 base.Toolsets,
+			Instruction:              plannerPrompt,
+			IncludeContents:          llmagent.IncludeContentsNone,
 			DisallowTransferToParent: true,
-			DisallowTransferToPeers: true,
+			DisallowTransferToPeers:  true,
 		})
 		if err != nil {
 			yield(nil, fmt.Errorf("knloop: create planner agent: %w", err))
 			return Plan{}, false
 		}
 
-		if !drain(ag, ctx, yield) {
+		text, ok := drainCapture(ag, ctx, yield)
+		if !ok {
 			return Plan{}, false
 		}
 
-		// Read the plan from session state (saved by OutputKey).
-		planJSON := stateGetString(ctx, statePlan)
-		plan, parseErr := parsePlan(planJSON)
-		if parseErr != nil {
-			stateSet(ctx, statePlanFailures, "Could not parse plan JSON: "+parseErr.Error()+". Ensure your response is valid JSON matching the required schema.")
-			continue
-		}
+		plan := parsePlan(text)
 
 		// Deterministic validation — no LLM involved.
 		skillCtx := stateGetString(ctx, stateSkillContext)
@@ -110,23 +79,44 @@ func generatePlan(ctx agent.InvocationContext, base llmagent.BaseAgentConfig, cf
 		return plan, true
 	}
 
-	// Max iterations reached — use whatever plan was last produced (may be partial).
+	// Max iterations reached — return an empty plan and let synthesis note no evidence.
 	stateSet(ctx, statePlanFailures, "")
-	planJSON := stateGetString(ctx, statePlan)
-	plan, _ := parsePlan(planJSON)
-	return plan, true
+	return Plan{}, true
 }
 
-// parsePlan deserialises the JSON string saved by the planner's OutputKey.
-func parsePlan(jsonStr string) (Plan, error) {
-	if strings.TrimSpace(jsonStr) == "" {
-		return Plan{}, fmt.Errorf("plan JSON is empty")
+// parsePlan converts the planner's plain-text bullet list into a Plan.
+// It accepts lines prefixed with "- ", "* ", "• ", or a number+dot ("1. ").
+// Blank lines and lines with no recognisable question content are skipped.
+func parsePlan(text string) Plan {
+	var tasks []Task
+	for _, line := range strings.Split(text, "\n") {
+		q := strings.TrimSpace(line)
+		// Strip common bullet/list prefixes.
+		q = strings.TrimPrefix(q, "- ")
+		q = strings.TrimPrefix(q, "* ")
+		q = strings.TrimPrefix(q, "• ")
+		// Strip leading "N. " numbered-list prefix.
+		if idx := strings.Index(q, ". "); idx > 0 && idx <= 3 {
+			if allDigits(q[:idx]) {
+				q = q[idx+2:]
+			}
+		}
+		q = strings.TrimSpace(q)
+		if q != "" {
+			tasks = append(tasks, Task{Question: q})
+		}
 	}
-	var plan Plan
-	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
-		return Plan{}, fmt.Errorf("unmarshal: %w", err)
+	return Plan{Tasks: tasks}
+}
+
+// allDigits reports whether s consists entirely of ASCII digit characters.
+func allDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
 	}
-	return plan, nil
+	return len(s) > 0
 }
 
 // validatePlan runs deterministic checks on the plan.
@@ -149,11 +139,14 @@ func validatePlan(plan Plan, skillContext string, minTasks int) []string {
 			continue
 		}
 		lower := strings.ToLower(q)
-		if strings.Contains(lower, " and ") {
-			failures = append(failures, fmt.Sprintf(
-				"task %d is compound (contains 'and'): %q — split it into two separate tasks",
-				i+1, q,
-			))
+		for _, conj := range []string{" and ", " or ", " but ", " also "} {
+			if strings.Contains(lower, conj) {
+				failures = append(failures, fmt.Sprintf(
+					"task %d is compound (contains %q): %q — split it into separate tasks",
+					i+1, strings.TrimSpace(conj), q,
+				))
+				break
+			}
 		}
 		if seen[lower] {
 			failures = append(failures, fmt.Sprintf("task %d is a duplicate of an earlier question: %q", i+1, q))
