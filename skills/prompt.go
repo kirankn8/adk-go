@@ -17,28 +17,26 @@ package skills
 import (
 	"html"
 	"strings"
+
+	skill "google.golang.org/adk/tool/skilltoolset/skill"
 )
 
-//type SkillLike interface {
-//	Name() string
-//	Description() string
-//}
-
-func FormatSkillsAsXML(skills []*Skill) string {
-	if len(skills) == 0 {
+// FormatSkillsAsXML formats a list of frontmatters as an XML block for injection into system prompts.
+func FormatSkillsAsXML(frontmatters []*skill.Frontmatter) string {
+	if len(frontmatters) == 0 {
 		return "<available_skills>\n</available_skills>"
 	}
 
 	var b strings.Builder
 	b.WriteString("<available_skills>\n")
 
-	for _, item := range skills {
+	for _, fm := range frontmatters {
 		b.WriteString("<skill>\n")
 		b.WriteString("<name>\n")
-		b.WriteString(html.EscapeString(item.Name()))
+		b.WriteString(html.EscapeString(fm.Name))
 		b.WriteString("\n</name>\n")
 		b.WriteString("<description>\n")
-		b.WriteString(html.EscapeString(item.Description()))
+		b.WriteString(html.EscapeString(fm.Description))
 		b.WriteString("\n</description>\n")
 		b.WriteString("</skill>\n")
 	}

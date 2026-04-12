@@ -28,27 +28,21 @@ import (
 	"google.golang.org/adk/cmd/launcher/full"
 	"google.golang.org/adk/code_executors"
 	"google.golang.org/adk/model/gemini"
-	"google.golang.org/adk/skills"
 	"google.golang.org/adk/tool"
-	"google.golang.org/adk/tool/skilltool"
+	"google.golang.org/adk/tool/skilltoolset"
 )
 
 func main() {
 	ctx := context.Background()
 
-	skillPathList := []string{
-		"You Skill Path",
-	}
-	var skillList []*skills.Skill
-	for _, path := range skillPathList {
-		skill, err := skills.LoadSkillFromDir(path)
-		if err != nil {
-			panic(err)
-		}
-		skillList = append(skillList, skill)
-	}
+	// Point at the directory that contains your skill subdirectories.
+	// Each subdirectory must contain a SKILL.md file.
+	skillsDir := "path/to/your/skills"
 
-	skillToolset, err := skilltool.NewSkillToolset(skillList, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
+	skillToolset, err := skilltoolset.NewFileSystemSkillToolset(
+		skillsDir,
+		code_executors.NewUnsafeLocalCodeExecutor(300*time.Second),
+	)
 	if err != nil {
 		panic(err)
 	}

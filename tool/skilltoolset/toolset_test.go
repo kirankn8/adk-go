@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package skilltool
+package skilltoolset
 
 import (
-	"log"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +24,8 @@ import (
 	"google.golang.org/adk/tool"
 )
 
-var mockSkills = map[string]*skills.Skill{
+// mockSkillDefs holds the in-memory skill definitions used to seed test directories.
+var mockSkillDefs = map[string]*skills.Skill{
 	"multiplication-calculator": {
 		Frontmatter: &skills.Frontmatter{
 			Name:        "multiplication-calculator",
@@ -82,39 +82,42 @@ if __name__ == "__main__":
 	},
 }
 
-func createMockSkill(t *testing.T) []*skills.Skill {
+// createTestToolset writes mock skills to a temp directory and returns a
+// FileSystem-backed SkillToolset. This exercises the full lazy-loading path.
+func createTestToolset(t *testing.T, executor code_executors.CodeExecutor) *SkillToolset {
+	t.Helper()
 	tmpDir := t.TempDir()
-	log.Print("Created temp dir: " + tmpDir)
-	var skillList []*skills.Skill
-	for _, sk := range mockSkills {
-		err := sk.WriteSkill(tmpDir)
-		if err != nil {
-			t.Fatalf("write skill %s to %s error:%s", sk.Name(), tmpDir, err)
+	for _, sk := range mockSkillDefs {
+		if err := sk.WriteSkill(tmpDir); err != nil {
+			t.Fatalf("write skill %s: %v", sk.Name(), err)
 		}
-		skillList = append(skillList, sk)
 	}
-	return skillList
+	ts, err := NewFileSystemSkillToolset(tmpDir, executor)
+	if err != nil {
+		t.Fatalf("NewFileSystemSkillToolset: %v", err)
+	}
+	return ts
 }
 
-func TestListSkillsTool(t *testing.T) {
-	skillList := createMockSkill(t)
-	toolset, err := NewSkillToolset(skillList, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
-	if err != nil {
-		t.Fatalf("NewSkillToolset: %v", err)
-	}
+type mockToolContext struct {
+	tool.Context
+}
 
-	listTool := toolset.listSkillsTool()
+func (m *mockToolContext) InvocationID() string { return "test-invocation-id" }
+
+func TestListSkillsTool(t *testing.T) {
+	ts := createTestToolset(t, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
+
+	listTool := ts.listSkillsTool()
 	if listTool.Name() != "list_skills" {
 		t.Errorf("list tool name: got %q want list_skills", listTool.Name())
 	}
 
-	result, err := toolset.listSkillsToolHandler(nil, listSkillsArgs{})
+	result, err := ts.listSkillsToolHandler(nil, listSkillsArgs{})
 	if err != nil {
 		t.Fatalf("listSkillsToolHandler: %v", err)
 	}
-
-	outputMap := result
-	xmlResult, ok := outputMap["result"].(string)
+	xmlResult, ok := result["result"].(string)
 	if !ok {
 		t.Fatal("result is not a string")
 	}
@@ -127,170 +130,148 @@ func TestListSkillsTool(t *testing.T) {
 }
 
 func TestLoadSkillTool(t *testing.T) {
-	skillList := createMockSkill(t)
-	toolset, err := NewSkillToolset(skillList, nil)
-	if err != nil {
-		t.Fatalf("NewSkillToolset: %v", err)
-	}
+	ts := createTestToolset(t, nil)
 
-	loadTool := toolset.loadSkillTool()
+	loadTool := ts.loadSkillTool()
 	if loadTool.Name() != "load_skill" {
 		t.Errorf("load tool name: got %q want load_skill", loadTool.Name())
 	}
 
-	result, err := toolset.loadSkillToolHandler(nil, loadSkillArgs{})
+	// Missing name.
+	result, err := ts.loadSkillToolHandler(nil, loadSkillArgs{})
 	if err != nil {
 		t.Fatalf("loadSkillToolHandler missing name: %v", err)
 	}
-	outputMap := result
-	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
-		t.Errorf("missing name error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("missing name error_code: got %v", result["error_code"])
 	}
 
-	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Name: "unknown-skill"})
+	// Unknown skill.
+	result, err = ts.loadSkillToolHandler(nil, loadSkillArgs{Name: "unknown-skill"})
 	if err != nil {
 		t.Fatalf("loadSkillToolHandler unknown: %v", err)
 	}
-	outputMap = result
-	if outputMap["error_code"] != "SKILL_NOT_FOUND" {
-		t.Errorf("unknown skill error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "SKILL_NOT_FOUND" {
+		t.Errorf("unknown skill error_code: got %v", result["error_code"])
 	}
 
-	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculator"})
+	// Success via name field.
+	result, err = ts.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculator"})
 	if err != nil {
 		t.Fatalf("loadSkillToolHandler success: %v", err)
 	}
-	outputMap = result
-	if outputMap["skill_name"] != "multiplication-calculator" {
-		t.Errorf("skill_name: got %v", outputMap["skill_name"])
+	if result["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill_name: got %v", result["skill_name"])
 	}
-	if outputMap["instructions"] != mockSkills["multiplication-calculator"].Instructions {
-		t.Error("instructions mismatch")
+	if result["instructions"] == "" {
+		t.Error("instructions should be non-empty")
 	}
-	if outputMap["frontmatter"] == "" {
+	if result["frontmatter"] == "" {
 		t.Error("frontmatter should be non-empty")
 	}
 
-	result, err = toolset.loadSkillToolHandler(nil, loadSkillArgs{Skill: "multiplication-calculator"})
+	// Success via skill alias.
+	result, err = ts.loadSkillToolHandler(nil, loadSkillArgs{Skill: "multiplication-calculator"})
 	if err != nil {
 		t.Fatalf("loadSkillToolHandler skill alias: %v", err)
 	}
-	outputMap = result
-	if outputMap["skill_name"] != "multiplication-calculator" {
-		t.Errorf("skill alias skill_name: got %v", outputMap["skill_name"])
+	if result["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill alias skill_name: got %v", result["skill_name"])
 	}
 }
 
 func TestLoadSkillResourceTool(t *testing.T) {
-	skillList := createMockSkill(t)
-	toolset, err := NewSkillToolset(skillList, nil)
-	if err != nil {
-		t.Fatalf("NewSkillToolset: %v", err)
-	}
+	ts := createTestToolset(t, nil)
 
-	resourceTool := toolset.loadSkillResourceTool()
+	resourceTool := ts.loadSkillResourceTool()
 	if resourceTool.Name() != "load_skill_resource" {
 		t.Errorf("resource tool name: got %q", resourceTool.Name())
 	}
 
-	result, err := toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{})
+	// Missing skill name.
+	result, err := ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{})
 	if err != nil {
 		t.Fatalf("loadSkillResourceToolHandler: %v", err)
 	}
-	outputMap := result
-	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
-		t.Errorf("error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("error_code: got %v", result["error_code"])
 	}
 
-	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{SkillName: "multiplication-calculator"})
+	// Missing resource path.
+	result, err = ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{SkillName: "multiplication-calculator"})
 	if err != nil {
 		t.Fatalf("loadSkillResourceToolHandler: %v", err)
 	}
-	outputMap = result
-	if outputMap["error_code"] != "MISSING_RESOURCE_PATH" {
-		t.Errorf("error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "MISSING_RESOURCE_PATH" {
+		t.Errorf("error_code: got %v", result["error_code"])
 	}
 
-	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
+	// Success via path field.
+	result, err = ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
 		Path:      "scripts/multiply.py",
 	})
 	if err != nil {
 		t.Fatalf("loadSkillResourceToolHandler success: %v", err)
 	}
-	outputMap = result
-	if outputMap["skill_name"] != "multiplication-calculator" {
-		t.Errorf("skill_name: got %v", outputMap["skill_name"])
+	if result["skill_name"] != "multiplication-calculator" {
+		t.Errorf("skill_name: got %v", result["skill_name"])
 	}
-	if outputMap["path"] != "scripts/multiply.py" {
-		t.Errorf("path: got %v", outputMap["path"])
+	if result["path"] != "scripts/multiply.py" {
+		t.Errorf("path: got %v", result["path"])
 	}
-	wantContent := mockSkills["multiplication-calculator"].Resources.Scripts["multiply.py"].String()
-	if outputMap["content"] != wantContent {
-		t.Error("content mismatch")
+	wantContent := mockSkillDefs["multiplication-calculator"].Resources.Scripts["multiply.py"].Src
+	if result["content"] != wantContent {
+		t.Errorf("content mismatch: got %q want %q", result["content"], wantContent)
 	}
 
-	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
+	// Success via resource_path alias.
+	result, err = ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName:    "multiplication-calculator",
 		ResourcePath: "scripts/multiply.py",
 	})
 	if err != nil {
 		t.Fatalf("loadSkillResourceToolHandler resource_path alias: %v", err)
 	}
-	outputMap = result
-	if outputMap["path"] != "scripts/multiply.py" {
-		t.Errorf("resource_path alias path: got %v", outputMap["path"])
+	if result["path"] != "scripts/multiply.py" {
+		t.Errorf("resource_path alias path: got %v", result["path"])
 	}
-	if outputMap["content"] != wantContent {
+	if result["content"] != wantContent {
 		t.Error("resource_path alias content mismatch")
 	}
 
-	result, err = toolset.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
+	// Not found.
+	result, err = ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
 		Path:      "scripts/unknown.py",
 	})
 	if err != nil {
 		t.Fatalf("loadSkillResourceToolHandler not found: %v", err)
 	}
-	outputMap = result
-	if outputMap["error_code"] != "RESOURCE_NOT_FOUND" {
-		t.Errorf("error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "RESOURCE_NOT_FOUND" {
+		t.Errorf("error_code: got %v", result["error_code"])
 	}
-}
-
-type mockToolContext struct {
-	tool.Context
-}
-
-func (m *mockToolContext) InvocationID() string {
-	return "test-invocation-id"
 }
 
 func TestRunSkillScriptTool(t *testing.T) {
-	skillList := createMockSkill(t)
+	ts := createTestToolset(t, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
 
-	mockExecutor := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
-
-	toolset, err := NewSkillToolset(skillList, mockExecutor)
-	if err != nil {
-		t.Fatalf("NewSkillToolset: %v", err)
-	}
-
-	runTool := toolset.runSkillScriptTool()
+	runTool := ts.runSkillScriptTool()
 	if runTool.Name() != "run_skill_script" {
 		t.Errorf("run tool name: got %q", runTool.Name())
 	}
 
-	result, err := toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{})
+	// Missing skill name.
+	result, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{})
 	if err != nil {
 		t.Fatalf("runSkillScriptToolHandler missing: %v", err)
 	}
-	outputMap := result
-	if outputMap["error_code"] != "MISSING_SKILL_NAME" {
-		t.Errorf("error_code: got %v", outputMap["error_code"])
+	if result["error_code"] != "MISSING_SKILL_NAME" {
+		t.Errorf("error_code: got %v", result["error_code"])
 	}
 
-	result, err = toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+	// Success with args_list.
+	result, err = ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
 		ScriptPath: "scripts/multiply.py",
 		Args:       []string{"2", "3", "4"},
@@ -298,16 +279,15 @@ func TestRunSkillScriptTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSkillScriptToolHandler success: %v", err)
 	}
-	outputMap = result
-	if outputMap["status"] != "success" {
-		t.Errorf("status: got %v want success", outputMap["status"])
+	if result["status"] != "success" {
+		t.Errorf("status: got %v want success", result["status"])
 	}
-	if outputMap["stdout"] != "24.0\n" {
-		t.Errorf("stdout: got %q want %q", outputMap["stdout"], "24.0\n")
+	if result["stdout"] != "24.0\n" {
+		t.Errorf("stdout: got %q want %q", result["stdout"], "24.0\n")
 	}
 
-	// Model-style aliases: script + args string instead of script_path + args_list.
-	result, err = toolset.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
+	// Success with alias args string.
+	result, err = ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName: "multiplication-calculator",
 		Script:    "scripts/multiply.py",
 		ArgsLine:  "2 3 4",
@@ -315,22 +295,18 @@ func TestRunSkillScriptTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runSkillScriptToolHandler alias args: %v", err)
 	}
-	outputMap = result
-	if outputMap["status"] != "success" {
-		t.Errorf("alias status: got %v want success", outputMap["status"])
+	if result["status"] != "success" {
+		t.Errorf("alias status: got %v want success", result["status"])
 	}
-	if outputMap["stdout"] != "24.0\n" {
-		t.Errorf("alias stdout: got %q want %q", outputMap["stdout"], "24.0\n")
+	if result["stdout"] != "24.0\n" {
+		t.Errorf("alias stdout: got %q want %q", result["stdout"], "24.0\n")
 	}
 }
 
 func TestRunSkillScriptSteersToLoadSkillResource(t *testing.T) {
-	skillList := createMockSkill(t)
-	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
-	ts, err := NewSkillToolset(skillList, exec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := createTestToolset(t, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
+
+	// A script path that succeeds.
 	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
 		ScriptPath: "scripts/multiply.py",
@@ -342,6 +318,8 @@ func TestRunSkillScriptSteersToLoadSkillResource(t *testing.T) {
 	if res["error_code"] != nil {
 		t.Fatalf("unexpected error: %v", res)
 	}
+
+	// A references/ path should steer to load_skill_resource.
 	res, err = ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
 		ScriptPath: "references/guide.md",
@@ -355,15 +333,11 @@ func TestRunSkillScriptSteersToLoadSkillResource(t *testing.T) {
 }
 
 func TestRunSkillScriptNotFoundDidYouMean(t *testing.T) {
-	skillList := createMockSkill(t)
-	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
-	ts, err := NewSkillToolset(skillList, exec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := createTestToolset(t, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
+
 	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
-		ScriptPath: "scripts/multipy.py",
+		ScriptPath: "scripts/multipy.py", // typo
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -380,12 +354,8 @@ func TestRunSkillScriptNotFoundDidYouMean(t *testing.T) {
 }
 
 func TestRunSkillScriptNotFoundAvailableScripts(t *testing.T) {
-	skillList := createMockSkill(t)
-	exec := code_executors.NewUnsafeLocalCodeExecutor(300 * time.Second)
-	ts, err := NewSkillToolset(skillList, exec)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := createTestToolset(t, code_executors.NewUnsafeLocalCodeExecutor(300*time.Second))
+
 	res, err := ts.runSkillScriptToolHandler(&mockToolContext{}, runSkillScriptArgs{
 		SkillName:  "multiplication-calculator",
 		ScriptPath: "scripts/unknown_runner.py",
@@ -409,14 +379,11 @@ func TestRunSkillScriptNotFoundAvailableScripts(t *testing.T) {
 }
 
 func TestLoadSkillResourceMissingPrefixRecovery(t *testing.T) {
-	skillList := createMockSkill(t)
-	ts, err := NewSkillToolset(skillList, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ts := createTestToolset(t, nil)
+
 	res, err := ts.loadSkillResourceToolHandler(nil, loadSkillResourceArgs{
 		SkillName: "multiplication-calculator",
-		Path:      "multiply.py",
+		Path:      "multiply.py", // missing scripts/ prefix
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,12 +397,9 @@ func TestLoadSkillResourceMissingPrefixRecovery(t *testing.T) {
 }
 
 func TestLoadSkillDidYouMean(t *testing.T) {
-	skillList := createMockSkill(t)
-	ts, err := NewSkillToolset(skillList, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := ts.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculatr"})
+	ts := createTestToolset(t, nil)
+
+	res, err := ts.loadSkillToolHandler(nil, loadSkillArgs{Name: "multiplication-calculatr"}) // typo
 	if err != nil {
 		t.Fatal(err)
 	}

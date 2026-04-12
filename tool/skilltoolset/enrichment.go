@@ -12,15 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package skilltool
+package skilltoolset
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
 	"strings"
 
-	"google.golang.org/adk/skills"
+	"google.golang.org/adk/tool/skilltoolset/skill"
 )
 
 func availabilityField(prefix string) string {
@@ -36,21 +38,22 @@ func availabilityField(prefix string) string {
 	}
 }
 
-func (s *SkillToolset) sortedSkillNames() []string {
-	out := make([]string, 0, len(s.skills))
-	for k := range s.skills {
-		out = append(out, k)
+func (s *SkillToolset) sortedSkillNames(ctx context.Context) []string {
+	fms, _ := s.source.ListFrontmatters(ctx)
+	names := make([]string, 0, len(fms))
+	for _, fm := range fms {
+		names = append(names, fm.Name)
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(names)
+	return names
 }
 
-func (s *SkillToolset) skillNotFoundPayload(wrong string) map[string]any {
+func (s *SkillToolset) skillNotFoundPayload(ctx context.Context, wrong string) map[string]any {
 	base := map[string]any{
 		"error":      fmt.Sprintf("Skill '%s' not found.", wrong),
 		"error_code": "SKILL_NOT_FOUND",
 	}
-	names := s.sortedSkillNames()
+	names := s.sortedSkillNames(ctx)
 	if len(names) == 0 {
 		return base
 	}
@@ -83,8 +86,8 @@ func useLoadSkillResourcePayload(skillName, p string) map[string]any {
 	}
 }
 
-func (s *SkillToolset) emptyResourcePathPayload(sk *skills.Skill) map[string]any {
-	paths := BundledVirtualPaths(sk)
+func (s *SkillToolset) emptyResourcePathPayload(ctx context.Context, skillName string) map[string]any {
+	paths, _ := s.source.ListResources(ctx, skillName, "")
 	return map[string]any{
 		"error":         "Resource path is required (use path or resource_path).",
 		"error_code":    "MISSING_RESOURCE_PATH",
@@ -92,26 +95,33 @@ func (s *SkillToolset) emptyResourcePathPayload(sk *skills.Skill) map[string]any
 	}
 }
 
-func (s *SkillToolset) junkResourceKeyPayload(sk *skills.Skill, prefix string) map[string]any {
+func (s *SkillToolset) junkResourceKeyPayload(ctx context.Context, skillName, prefix string) map[string]any {
 	m := map[string]any{
 		"error":      "Resource path must include a file path after the bucket prefix.",
 		"error_code": "INVALID_RESOURCE_PATH",
 	}
-	keys := bucketKeys(sk, prefix)
+	bucket := strings.TrimSuffix(prefix, "/")
+	bucketPaths, _ := s.source.ListResources(ctx, skillName, bucket)
+	keys := bucketKeys(bucketPaths, prefix)
 	m[availabilityField(prefix)] = rankedByLevenshtein("", keys, maxRankedCandidates)
 	return m
 }
 
-func (s *SkillToolset) resourceNotFoundPayload(sk *skills.Skill, fullPath, prefix, attemptKey string) map[string]any {
-	errStr := fmt.Sprintf("Resource '%s' not found in skill '%s'.", fullPath, sk.Name())
-	if alt := crossBucketCanonicalPath(sk, prefix, attemptKey); alt != "" {
+func (s *SkillToolset) resourceNotFoundPayload(ctx context.Context, skillName, fullPath, prefix, attemptKey string) map[string]any {
+	errStr := fmt.Sprintf("Resource '%s' not found in skill '%s'.", fullPath, skillName)
+	allPaths, _ := s.source.ListResources(ctx, skillName, "")
+
+	if alt := crossBucketCanonicalPath(allPaths, prefix, attemptKey); alt != "" {
 		return map[string]any{
 			"error":             "Resource exists under a different bucket prefix.",
 			"error_code":        "FILE_UNDER_DIFFERENT_PREFIX",
 			"did_you_mean_path": alt,
 		}
 	}
-	bk := bucketKeys(sk, prefix)
+
+	bucket := strings.TrimSuffix(prefix, "/")
+	bucketPaths, _ := s.source.ListResources(ctx, skillName, bucket)
+	bk := bucketKeys(bucketPaths, prefix)
 	ak := strings.ToLower(attemptKey)
 	best, d, second := levPickBestLower(ak, bk)
 	if len(bk) > 0 && d <= defaultLevMax(len(attemptKey)) && d < second {
@@ -121,17 +131,16 @@ func (s *SkillToolset) resourceNotFoundPayload(sk *skills.Skill, fullPath, prefi
 			"did_you_mean_path": prefix + best,
 		}
 	}
-	if vp := virtualPathsByBasename(sk, path.Base(attemptKey)); len(vp) == 1 {
+	if vp := virtualPathsByBasename(allPaths, path.Base(attemptKey)); len(vp) == 1 {
 		return map[string]any{
 			"error":             errStr,
 			"error_code":        "RESOURCE_NOT_FOUND",
 			"did_you_mean_path": vp[0],
 		}
 	}
-	inv := BundledVirtualPaths(sk)
 	fp := strings.ToLower(fullPath)
-	bestVP, dVP, secondVP := levPickBestLower(fp, inv)
-	if len(inv) > 0 && dVP <= defaultLevMax(len(fullPath)) && dVP < secondVP {
+	bestVP, dVP, secondVP := levPickBestLower(fp, allPaths)
+	if len(allPaths) > 0 && dVP <= defaultLevMax(len(fullPath)) && dVP < secondVP {
 		return map[string]any{
 			"error":             errStr,
 			"error_code":        "RESOURCE_NOT_FOUND",
@@ -145,8 +154,8 @@ func (s *SkillToolset) resourceNotFoundPayload(sk *skills.Skill, fullPath, prefi
 	}
 }
 
-func (s *SkillToolset) missingPrefixPayload(sk *skills.Skill, skillName, norm string) map[string]any {
-	paths := BundledVirtualPaths(sk)
+func (s *SkillToolset) missingPrefixPayload(ctx context.Context, skillName, norm string) map[string]any {
+	paths, _ := s.source.ListResources(ctx, skillName, "")
 	ql := strings.ToLower(norm)
 
 	for _, vp := range paths {
@@ -160,7 +169,7 @@ func (s *SkillToolset) missingPrefixPayload(sk *skills.Skill, skillName, norm st
 		}
 	}
 
-	hits := virtualPathsByBasename(sk, path.Base(norm))
+	hits := virtualPathsByBasename(paths, path.Base(norm))
 	if len(hits) == 1 {
 		return map[string]any{
 			"error":             "Path must start with references/, assets/, or scripts/.",
@@ -180,12 +189,14 @@ func (s *SkillToolset) missingPrefixPayload(sk *skills.Skill, skillName, norm st
 	if !strings.Contains(norm, "/") {
 		for _, pre := range []string{"references/", "assets/", "scripts/"} {
 			trial := pre + norm
-			if _, ok := lookupVirtual(sk, trial); ok {
-				return map[string]any{
-					"error":             "Path must start with references/, assets/, or scripts/.",
-					"error_code":        "MISSING_RESOURCE_PREFIX",
-					"did_you_mean_path": trial,
-					"suggested_args":    map[string]any{"skill_name": skillName, "path": trial},
+			for _, vp := range paths {
+				if strings.EqualFold(vp, trial) {
+					return map[string]any{
+						"error":             "Path must start with references/, assets/, or scripts/.",
+						"error_code":        "MISSING_RESOURCE_PREFIX",
+						"did_you_mean_path": trial,
+						"suggested_args":    map[string]any{"skill_name": skillName, "path": trial},
+					}
 				}
 			}
 		}
@@ -209,12 +220,11 @@ func (s *SkillToolset) missingPrefixPayload(sk *skills.Skill, skillName, norm st
 	}
 }
 
-func (s *SkillToolset) scriptNotFoundPayload(sk *skills.Skill, displayPath, scriptKey string) map[string]any {
-	errStr := fmt.Sprintf("Script '%s' not found in skill '%s'.", displayPath, sk.Name())
-	var scripts []string
-	if sk.Resources != nil {
-		scripts = append(scripts, sk.Resources.ListScripts()...)
-	}
+func (s *SkillToolset) scriptNotFoundPayload(ctx context.Context, skillName, displayPath, scriptKey string) map[string]any {
+	errStr := fmt.Sprintf("Script '%s' not found in skill '%s'.", displayPath, skillName)
+	scriptPaths, _ := s.source.ListResources(ctx, skillName, "scripts")
+	scripts := bucketKeys(scriptPaths, "scripts/")
+
 	skKey := strings.ToLower(scriptKey)
 	best, d, second := levPickBestLower(skKey, scripts)
 	if len(scripts) > 0 && d <= defaultLevMax(len(scriptKey)) && d < second {
@@ -224,15 +234,17 @@ func (s *SkillToolset) scriptNotFoundPayload(sk *skills.Skill, displayPath, scri
 			"did_you_mean_path": "scripts/" + best,
 		}
 	}
-	if hits := virtualPathsByBasename(sk, path.Base(scriptKey)); len(hits) == 1 && !strings.HasPrefix(hits[0], "scripts/") {
+
+	allPaths, _ := s.source.ListResources(ctx, skillName, "")
+	if hits := virtualPathsByBasename(allPaths, path.Base(scriptKey)); len(hits) == 1 && !strings.HasPrefix(hits[0], "scripts/") {
 		return map[string]any{
 			"error":          "That name refers to a reference or asset; use load_skill_resource to read it.",
 			"error_code":     "USE_LOAD_SKILL_RESOURCE",
 			"suggested_tool": "load_skill_resource",
-			"suggested_args": map[string]any{"skill_name": sk.Name(), "path": hits[0]},
+			"suggested_args": map[string]any{"skill_name": skillName, "path": hits[0]},
 		}
 	}
-	scriptPaths := ScriptBundledVirtualPaths(sk)
+
 	dp := strings.ToLower(displayPath)
 	bestVP, dVP, secondVP := levPickBestLower(dp, scriptPaths)
 	if len(scriptPaths) > 0 && dVP <= defaultLevMax(len(displayPath)) && dVP < secondVP {
@@ -247,4 +259,14 @@ func (s *SkillToolset) scriptNotFoundPayload(sk *skills.Skill, displayPath, scri
 		"error_code":        "SCRIPT_NOT_FOUND",
 		"available_scripts": rankedByLevenshtein(dp, scriptPaths, maxRankedCandidates),
 	}
+}
+
+// isSkillNotFound checks whether err indicates the skill was not found.
+func isSkillNotFound(err error) bool {
+	return errors.Is(err, skill.ErrSkillNotFound) || errors.Is(err, skill.ErrInvalidSkillName)
+}
+
+// isResourceNotFound checks whether err indicates a resource was not found.
+func isResourceNotFound(err error) bool {
+	return errors.Is(err, skill.ErrResourceNotFound) || errors.Is(err, skill.ErrInvalidResourcePath)
 }

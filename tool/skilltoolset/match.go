@@ -12,53 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package skilltool
+package skilltoolset
 
 import (
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"google.golang.org/adk/skills"
 )
 
 const (
 	maxRankedCandidates   = 12 // cap for distance-ranked hint lists (paths, keys, inventory)
 	closestSkillNameHints = 3  // SKILL_NOT_FOUND: top skill ids when no single did_you_mean
 )
-
-// BundledVirtualPaths returns sorted virtual paths (references/…, assets/…, scripts/…) for sk.
-func BundledVirtualPaths(sk *skills.Skill) []string {
-	if sk == nil || sk.Resources == nil {
-		return nil
-	}
-	var out []string
-	for _, k := range sk.Resources.ListReferences() {
-		out = append(out, "references/"+k)
-	}
-	for _, k := range sk.Resources.ListAssets() {
-		out = append(out, "assets/"+k)
-	}
-	for _, k := range sk.Resources.ListScripts() {
-		out = append(out, "scripts/"+k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// ScriptBundledVirtualPaths returns sorted virtual paths under scripts/ only.
-func ScriptBundledVirtualPaths(sk *skills.Skill) []string {
-	if sk == nil || sk.Resources == nil {
-		return nil
-	}
-	out := make([]string, 0, len(sk.Resources.Scripts))
-	for _, k := range sk.Resources.ListScripts() {
-		out = append(out, "scripts/"+k)
-	}
-	sort.Strings(out)
-	return out
-}
 
 func normalizeBundledPath(s string) string {
 	t := strings.TrimSpace(s)
@@ -190,7 +156,7 @@ func defaultLevMax(queryLen int) int {
 	return m
 }
 
-// levPickBestLower picks the candidate with smallest Levenshtein distance to queryLower (ASCII lower).
+// levPickBestLower picks the candidate with the smallest Levenshtein distance to queryLower.
 func levPickBestLower(queryLower string, candidates []string) (best string, dist, secondDist int) {
 	const big = 1 << 29
 	if len(candidates) == 0 {
@@ -242,54 +208,35 @@ func rankedByLevenshtein(queryLower string, paths []string, k int) []string {
 	return out
 }
 
-func lookupVirtual(sk *skills.Skill, virtual string) (content string, ok bool) {
-	if sk == nil || sk.Resources == nil {
-		return "", false
+// bucketKeys strips the bucket prefix from full virtual paths to get the relative key portion.
+// e.g. bucketKeys(["references/foo.md"], "references/") → ["foo.md"]
+func bucketKeys(bucketPaths []string, prefix string) []string {
+	out := make([]string, 0, len(bucketPaths))
+	for _, p := range bucketPaths {
+		out = append(out, strings.TrimPrefix(p, prefix))
 	}
-	pre, key, hasPre := splitVirtualPrefix(virtual)
-	if !hasPre || isUnsafeVirtualKey(key) {
-		return "", false
-	}
-	switch pre {
-	case "references/":
-		return sk.Resources.GetReference(key)
-	case "assets/":
-		return sk.Resources.GetAsset(key)
-	case "scripts/":
-		sc, has := sk.Resources.GetScript(key)
-		if !has || sc == nil {
-			return "", false
-		}
-		return sc.Src, true
-	default:
-		return "", false
-	}
+	return out
 }
 
-func bucketKeys(sk *skills.Skill, prefix string) []string {
-	if sk == nil || sk.Resources == nil {
+// virtualPathsByBasename returns paths from allPaths whose base name matches basename (case-insensitive).
+func virtualPathsByBasename(allPaths []string, basename string) []string {
+	if basename == "" || basename == "." {
 		return nil
 	}
-	switch prefix {
-	case "references/":
-		return sk.Resources.ListReferences()
-	case "assets/":
-		return sk.Resources.ListAssets()
-	case "scripts/":
-		return sk.Resources.ListScripts()
-	default:
-		return nil
+	var hits []string
+	for _, vp := range allPaths {
+		if strings.EqualFold(path.Base(vp), basename) {
+			hits = append(hits, vp)
+		}
 	}
+	return hits
 }
 
 // crossBucketCanonicalPath returns a single virtual path in another bucket with the same basename as relKey.
-func crossBucketCanonicalPath(sk *skills.Skill, currentPrefix, relKey string) string {
-	if sk == nil {
-		return ""
-	}
+func crossBucketCanonicalPath(allPaths []string, currentPrefix, relKey string) string {
 	b := path.Base(relKey)
 	var hits []string
-	for _, vp := range BundledVirtualPaths(sk) {
+	for _, vp := range allPaths {
 		pref, k, ok := splitVirtualPrefix(vp)
 		if !ok || pref == currentPrefix {
 			continue
@@ -302,19 +249,6 @@ func crossBucketCanonicalPath(sk *skills.Skill, currentPrefix, relKey string) st
 		return hits[0]
 	}
 	return ""
-}
-
-func virtualPathsByBasename(sk *skills.Skill, basename string) []string {
-	if basename == "" || basename == "." {
-		return nil
-	}
-	var hits []string
-	for _, vp := range BundledVirtualPaths(sk) {
-		if strings.EqualFold(path.Base(vp), basename) {
-			hits = append(hits, vp)
-		}
-	}
-	return hits
 }
 
 // walksAboveRoot reports whether relative path segments step above the starting directory.
@@ -346,8 +280,9 @@ func normalizeScriptPathForSecurity(s string) string {
 	return strings.TrimPrefix(t, "/")
 }
 
-// secureScriptKeyUnderSkill returns the script map key (slash form) safe to join under scripts/, or errPayload.
-func secureScriptKeyUnderSkill(sk *skills.Skill, scriptPath string) (key string, errPayload map[string]any) {
+// secureScriptKey returns the script map key (slash form) safe to use under scripts/, or errPayload.
+// Pure string validation — no filesystem access required.
+func secureScriptKey(scriptPath string) (key string, errPayload map[string]any) {
 	p := normalizeScriptPathForSecurity(scriptPath)
 	p, _ = collapseDoublePrefixes(p)
 	for strings.HasPrefix(p, "scripts/") {
@@ -363,13 +298,7 @@ func secureScriptKeyUnderSkill(sk *skills.Skill, scriptPath string) (key string,
 	if isUnsafeVirtualKey(p) {
 		return "", pathEscapeMap()
 	}
-	scriptsRoot := filepath.Join(sk.GetSkillPath(), "scripts")
-	abs := filepath.Join(scriptsRoot, filepath.FromSlash(p))
-	rel, err := filepath.Rel(scriptsRoot, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", pathNotAllowedMap()
-	}
-	return filepath.ToSlash(rel), nil
+	return filepath.ToSlash(p), nil
 }
 
 func pathEscapeMap() map[string]any {
