@@ -16,69 +16,102 @@
 package skilltool
 
 import (
-	"fmt"
+	"strings"
 
 	"google.golang.org/adk/tool"
 	"google.golang.org/adk/tool/functiontool"
 	"google.golang.org/adk/tool/skilltoolset/skill"
 )
 
-// LoadSkillArgs represents the input to load a skill.
+// LoadSkillArgs accepts the skill id under any of three keys. The primary
+// spelling is name; skill and skill_name are aliases tolerated for LLMs that
+// reach for the other names. Exactly one must be non-empty.
 type LoadSkillArgs struct {
-	Name string `json:"name" jsonschema:"The name of the skill to load."`
+	Name      string `json:"name,omitempty"       jsonschema:"The skill id to load (preferred)."`
+	Skill     string `json:"skill,omitempty"      jsonschema:"Alias for name (same as the skill id)."`
+	SkillName string `json:"skill_name,omitempty" jsonschema:"Alias for name (matches load_skill_resource)."`
 }
 
-type FrontmatterJSON struct {
-	Name          string            `json:"name"`
-	Description   string            `json:"description"`
-	License       string            `json:"license,omitempty"`
-	Compatibility string            `json:"compatibility,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	AllowedTools  []string          `json:"allowed-tools,omitempty"`
+func resolveLoadSkillID(a LoadSkillArgs) string {
+	if s := strings.TrimSpace(a.Name); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(a.Skill); s != "" {
+		return s
+	}
+	return strings.TrimSpace(a.SkillName)
 }
 
-// LoadSkillResult represents the output of a loaded skill.
-type LoadSkillResult struct {
-	SkillName    string           `json:"skill_name,omitempty"`
-	Instructions string           `json:"instructions,omitempty"`
-	Frontmatter  *FrontmatterJSON `json:"frontmatter,omitempty"`
-}
-
-// LoadSkill creates a tool.Tool to load a skill's instructions.
+// LoadSkill creates a tool.Tool that loads a skill's SKILL.md frontmatter and
+// instructions, with did_you_mean enrichment when the skill id is mistyped.
 func LoadSkill(source skill.Source) (tool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "load_skill",
 			Description: "Loads the SKILL.md instructions for a given skill.",
 		},
-		func(ctx tool.Context, args LoadSkillArgs) (*LoadSkillResult, error) {
+		func(ctx tool.Context, args LoadSkillArgs) (map[string]any, error) {
 			return loadSkill(ctx, args, source)
 		},
 	)
 }
 
-func loadSkill(ctx tool.Context, args LoadSkillArgs, source skill.Source) (*LoadSkillResult, error) {
-	if args.Name == "" {
-		return nil, fmt.Errorf("skill name is required to load a skill")
+func loadSkill(ctx tool.Context, args LoadSkillArgs, source skill.Source) (map[string]any, error) {
+	id := resolveLoadSkillID(args)
+	if id == "" {
+		return map[string]any{
+			"error":      "Skill name is required (use name, skill, or skill_name).",
+			"error_code": "MISSING_SKILL_NAME",
+		}, nil
 	}
-	frontmatter, err := source.LoadFrontmatter(ctx, args.Name)
+	c := toolCtx(ctx)
+
+	fm, err := source.LoadFrontmatter(c, id)
 	if err != nil {
-		return nil, fmt.Errorf("load frontmatter for skill %q: %w", args.Name, err)
+		if isSkillNotFound(err) {
+			return skillNotFoundPayload(c, source, id), nil
+		}
+		return map[string]any{"error": err.Error(), "error_code": "LOAD_ERROR"}, nil
 	}
-	instructions, err := source.LoadInstructions(ctx, args.Name)
+
+	instructions, err := source.LoadInstructions(c, id)
 	if err != nil {
-		return nil, fmt.Errorf("load instructions for skill %q: %w", args.Name, err)
+		return map[string]any{"error": err.Error(), "error_code": "LOAD_ERROR"}, nil
 	}
-	return &LoadSkillResult{
-		SkillName:    args.Name,
-		Instructions: instructions,
-		Frontmatter: &FrontmatterJSON{
-			Name:          frontmatter.Name,
-			Description:   frontmatter.Description,
-			License:       frontmatter.License,
-			Compatibility: frontmatter.Compatibility,
-			Metadata:      frontmatter.Metadata,
-			AllowedTools:  frontmatter.AllowedTools,
-		},
+
+	return map[string]any{
+		"skill_name":   fm.Name,
+		"instructions": instructions,
+		"frontmatter":  frontmatterToMap(fm),
 	}, nil
+}
+
+// frontmatterToMap produces the upstream-compatible JSON object shape for a
+// Frontmatter, with empty fields omitted.
+func frontmatterToMap(fm *skill.Frontmatter) map[string]any {
+	out := map[string]any{
+		"name":        fm.Name,
+		"description": fm.Description,
+	}
+	if fm.License != "" {
+		out["license"] = fm.License
+	}
+	if fm.Compatibility != "" {
+		out["compatibility"] = fm.Compatibility
+	}
+	if len(fm.Metadata) > 0 {
+		md := make(map[string]any, len(fm.Metadata))
+		for k, v := range fm.Metadata {
+			md[k] = v
+		}
+		out["metadata"] = md
+	}
+	if len(fm.AllowedTools) > 0 {
+		at := make([]any, len(fm.AllowedTools))
+		for i, v := range fm.AllowedTools {
+			at[i] = v
+		}
+		out["allowed-tools"] = at
+	}
+	return out
 }
