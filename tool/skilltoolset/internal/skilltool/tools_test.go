@@ -157,6 +157,9 @@ func TestLoadSkill(t *testing.T) {
 
 func TestLoadSkillResource(t *testing.T) {
 	source := &mockSource{
+		frontmatters: []*skill.Frontmatter{
+			{Name: "skill1", Description: "description1"},
+		},
 		resources: map[string]map[string]string{
 			"skill1": {"assets/data.txt": "content1"},
 		},
