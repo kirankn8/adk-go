@@ -60,6 +60,15 @@ func loadSkillResource(ctx tool.Context, args LoadSkillResourceArgs, source skil
 	}
 	reader, err := source.LoadResource(ctx, args.SkillName, args.ResourcePath)
 	if err != nil {
+		if isSkillNotFound(err) {
+			if hint := didYouMeanSkill(ctx, source, args.SkillName); hint != "" {
+				return nil, fmt.Errorf("load resource '%s' from skill '%s' (did you mean skill '%s'?): %w", args.ResourcePath, args.SkillName, hint, err)
+			}
+		} else if isResourceNotFound(err) {
+			if hint := didYouMeanResource(ctx, source, args.SkillName, args.ResourcePath); hint != "" {
+				return nil, fmt.Errorf("load resource '%s' from skill '%s' (did you mean '%s'?): %w", args.ResourcePath, args.SkillName, hint, err)
+			}
+		}
 		return nil, fmt.Errorf("load resource '%s' from skill '%s': %w", args.ResourcePath, args.SkillName, err)
 	}
 	defer func() {

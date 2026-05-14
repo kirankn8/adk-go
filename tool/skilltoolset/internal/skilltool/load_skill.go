@@ -63,6 +63,11 @@ func loadSkill(ctx tool.Context, args LoadSkillArgs, source skill.Source) (*Load
 	}
 	frontmatter, err := source.LoadFrontmatter(ctx, args.Name)
 	if err != nil {
+		if isSkillNotFound(err) {
+			if hint := didYouMeanSkill(ctx, source, args.Name); hint != "" {
+				return nil, fmt.Errorf("load frontmatter for skill %q (did you mean %q?): %w", args.Name, hint, err)
+			}
+		}
 		return nil, fmt.Errorf("load frontmatter for skill %q: %w", args.Name, err)
 	}
 	instructions, err := source.LoadInstructions(ctx, args.Name)
