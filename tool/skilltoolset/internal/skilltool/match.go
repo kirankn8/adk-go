@@ -17,11 +17,148 @@ package skilltool
 import (
 	"context"
 	"errors"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"google.golang.org/adk/tool/skilltoolset/skill"
 )
+
+// normalizeBundledPath canonicalizes a virtual skill resource path: trims
+// whitespace, converts backslashes to forward slashes, drops leading "./" and
+// "/" segments, and collapses redundant separators via path.Clean.
+func normalizeBundledPath(s string) string {
+	t := strings.TrimSpace(s)
+	t = filepath.ToSlash(t)
+	for strings.HasPrefix(t, "./") {
+		t = strings.TrimPrefix(t, "./")
+	}
+	t = strings.TrimPrefix(t, "/")
+	t = strings.TrimPrefix(path.Clean("/"+t), "/")
+	return t
+}
+
+// collapseDoublePrefixes folds references/references/ → references/ (and the
+// same for assets/ and scripts/). Reports whether any collapse occurred so the
+// caller can surface a corrected_path hint.
+func collapseDoublePrefixes(p string) (out string, redundant bool) {
+	out = p
+	for {
+		before := out
+		out = strings.ReplaceAll(out, "references/references/", "references/")
+		out = strings.ReplaceAll(out, "assets/assets/", "assets/")
+		out = strings.ReplaceAll(out, "scripts/scripts/", "scripts/")
+		if out != before {
+			redundant = true
+			continue
+		}
+		break
+	}
+	return out, redundant
+}
+
+// isOnlySkillMDPath reports whether the path resolves to a top-level SKILL.md
+// (case-insensitive). Used by run_skill_script to redirect callers to load_skill.
+func isOnlySkillMDPath(p string) bool {
+	c := path.Clean("/" + strings.TrimSpace(filepath.ToSlash(p)))
+	rel := strings.TrimPrefix(c, "/")
+	if rel == "." || rel == "" {
+		return false
+	}
+	return strings.EqualFold(path.Base(rel), "skill.md")
+}
+
+// isDocLikeForRunScript reports whether the path looks like documentation
+// (references/, assets/, or a non-SKILL.md .md file) — not an executable script.
+func isDocLikeForRunScript(sp string) bool {
+	lower := strings.ToLower(sp)
+	if strings.HasSuffix(lower, ".md") && !strings.EqualFold(path.Base(sp), "skill.md") {
+		return true
+	}
+	return strings.Contains(lower, "references/") || strings.Contains(lower, "assets/")
+}
+
+// isUnsafeVirtualKey reports whether key, treated as a relative path, would
+// escape its parent directory after path.Clean.
+func isUnsafeVirtualKey(key string) bool {
+	if key == "" {
+		return true
+	}
+	c := path.Clean("/" + key)
+	rel := strings.TrimPrefix(c, "/")
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return true
+	}
+	return strings.Contains(rel, "/../")
+}
+
+// walksAboveRoot reports whether relative path segments step above the
+// starting directory at any point (rather than only the final destination).
+func walksAboveRoot(p string) bool {
+	depth := 0
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "" || seg == "." {
+			continue
+		}
+		if seg == ".." {
+			depth--
+			if depth < 0 {
+				return true
+			}
+		} else {
+			depth++
+		}
+	}
+	return false
+}
+
+// normalizeScriptPathForSecurity trims and slashes only (no path.Clean) so
+// ".." segments stay visible for walksAboveRoot.
+func normalizeScriptPathForSecurity(s string) string {
+	t := strings.TrimSpace(s)
+	t = filepath.ToSlash(t)
+	for strings.HasPrefix(t, "./") {
+		t = strings.TrimPrefix(t, "./")
+	}
+	return strings.TrimPrefix(t, "/")
+}
+
+// secureScriptKey returns the script map key (slash form) safe to use under
+// scripts/, or an error payload describing why the path was rejected. Pure
+// string validation — no filesystem access required.
+func secureScriptKey(scriptPath string) (key string, errPayload map[string]any) {
+	p := normalizeScriptPathForSecurity(scriptPath)
+	p, _ = collapseDoublePrefixes(p)
+	for strings.HasPrefix(p, "scripts/") {
+		p = strings.TrimPrefix(p, "scripts/")
+	}
+	if strings.HasPrefix(p, "/") {
+		return "", pathNotAllowedMap()
+	}
+	if walksAboveRoot(p) {
+		return "", pathEscapeMap()
+	}
+	p = strings.TrimPrefix(path.Clean("/"+p), "/")
+	if isUnsafeVirtualKey(p) {
+		return "", pathEscapeMap()
+	}
+	return filepath.ToSlash(p), nil
+}
+
+func pathEscapeMap() map[string]any {
+	return map[string]any{
+		"error":      "Script path escapes the skill bundle or is invalid.",
+		"error_code": "PATH_ESCAPE",
+	}
+}
+
+func pathNotAllowedMap() map[string]any {
+	return map[string]any{
+		"error":      "Script path must stay under the skill's scripts/ directory.",
+		"error_code": "PATH_NOT_ALLOWED",
+	}
+}
 
 // levenshtein computes the edit distance between two strings.
 func levenshtein(a, b string) int {

@@ -17,8 +17,11 @@ package skilltoolset
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"google.golang.org/adk/agent"
+	"google.golang.org/adk/code_executors"
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/tool"
@@ -41,7 +44,8 @@ This is very important:
 ` +
 		"1. If a skill seems relevant to the current user query, you MUST use the `load_skill` tool with `skill_name=\"<SKILL_NAME>\"` to read its full instructions before proceeding.\n" +
 		"2. Once you have read the instructions, follow them exactly as documented before replying to the user. For example, If the instruction lists multiple steps, please make sure you complete all of them in order.\n" +
-		"3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.\n"
+		"3. The `load_skill_resource` tool is for viewing files within a skill's directory (e.g., `references/*`, `assets/*`, `scripts/*`). Do NOT use other tools to access these files.\n" +
+		"4. Use `run_skill_script` to execute scripts from a skill's `scripts/` directory. Use `load_skill_resource` to view script content first if needed. (If `run_skill_script` is not available, the toolset was configured without a code executor.)\n"
 )
 
 // Config holds the configuration for creating a Skill Toolset.
@@ -51,6 +55,12 @@ type Config struct {
 	Name string
 	// Optional system instruction. If empty, default instruction will be used.
 	SystemInstruction string
+	// Optional executor used by run_skill_script. When nil, the
+	// run_skill_script tool is not registered.
+	Executor code_executors.CodeExecutor
+	// Optional OS filesystem path containing skill subdirectories. Required
+	// alongside Executor for run_skill_script to resolve scripts on disk.
+	SkillsRoot string
 }
 
 // SkillToolset provides a toolset for skills.
@@ -86,12 +96,35 @@ func New(ctx context.Context, cfg Config) (*SkillToolset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create load skill resource tool: %w", err)
 	}
+	tools := []tool.Tool{listTool, loadTool, loadResourceTool}
+	if cfg.Executor != nil && cfg.SkillsRoot != "" {
+		runScriptTool, err := skilltool.RunSkillScript(cfg.Source, cfg.SkillsRoot, cfg.Executor)
+		if err != nil {
+			return nil, fmt.Errorf("create run skill script tool: %w", err)
+		}
+		tools = append(tools, runScriptTool)
+	}
 	return &SkillToolset{
 		name:              name,
-		tools:             []tool.Tool{listTool, loadTool, loadResourceTool},
+		tools:             tools,
 		source:            cfg.Source,
 		systemInstruction: instruction,
 	}, nil
+}
+
+// NewFileSystem creates a SkillToolset backed by a directory on disk. Each
+// subdirectory of dir must contain a SKILL.md file. When executor is non-nil,
+// the run_skill_script tool is enabled and resolves scripts under dir.
+func NewFileSystem(ctx context.Context, dir string, executor code_executors.CodeExecutor) (*SkillToolset, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve skills dir %q: %w", dir, err)
+	}
+	return New(ctx, Config{
+		Source:     skill.NewFileSystemSource(os.DirFS(abs)),
+		Executor:   executor,
+		SkillsRoot: abs,
+	})
 }
 
 // Name implements tool.Toolset. Returns the name of the toolset.
